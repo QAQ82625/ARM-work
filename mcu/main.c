@@ -349,13 +349,20 @@ void led_update(void) {
 }
 
 /************************** Beeper control **************************/
+// Passive buzzer requires AC square wave, not DC level.
+// SysTick ISR (1kHz) toggles the pin when beep_toggle_enabled is set,
+// producing a ~500Hz audible tone.
+static volatile uint8_t beep_toggle_enabled = 0;
+static uint8_t beep_phase = 0;             // toggled each SysTick for ~500Hz tone
+
 void beep_on(void) {
     if (night_mode) return;  // suppressed in night mode
-    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
+    beep_toggle_enabled = 1;
 }
 
 void beep_off(void) {
-    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
+    beep_toggle_enabled = 0;
+    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);  // drive pin low when silent
 }
 
 /************************** Alarm state machine **************************/
@@ -1867,6 +1874,15 @@ void SysTick_Handler(void) {
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0);
     else
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, 0);
+
+    // Beeper: toggle at 500Hz when active (passive buzzer needs AC)
+    if (beep_toggle_enabled) {
+        beep_phase = !beep_phase;
+        if (beep_phase)
+            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
+        else
+            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
+    }
 }
 
 /************************** UART0 ISR **************************/

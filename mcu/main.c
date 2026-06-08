@@ -349,20 +349,17 @@ void led_update(void) {
 }
 
 /************************** Beeper control **************************/
-// Passive buzzer requires AC square wave, not DC level.
-// SysTick ISR (1kHz) toggles the pin when beep_toggle_enabled is set,
-// producing a ~500Hz audible tone.
-static volatile uint8_t beep_toggle_enabled = 0;
-static uint8_t beep_phase = 0;             // toggled each SysTick for ~500Hz tone
+// S800 board uses an ACTIVE buzzer (built-in oscillator).
+// Just drive the pin HIGH to sound, LOW to silence — no PWM needed.
+// The alarm rhythm pattern handles the on/off cadence.
 
 void beep_on(void) {
     if (night_mode) return;  // suppressed in night mode
-    beep_toggle_enabled = 1;
+    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
 }
 
 void beep_off(void) {
-    beep_toggle_enabled = 0;
-    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);  // drive pin low when silent
+    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
 }
 
 /************************** Alarm state machine **************************/
@@ -1777,6 +1774,11 @@ void S800_GPIO_Init(void) {
     GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_0);    // heartbeat LED
     GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0);    // USER1 indicator
     GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_1);    // Beeper
+    GPIOPadConfigSet(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1,
+        GPIO_STRENGTH_8MA, GPIO_PIN_TYPE_STD);
+
+    // Ensure beeper starts silent
+    GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0);
 
     GPIOPinTypeGPIOInput(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1);
     GPIOPadConfigSet(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1,
@@ -1874,15 +1876,7 @@ void SysTick_Handler(void) {
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0);
     else
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, 0);
-
-    // Beeper: toggle at 500Hz when active (passive buzzer needs AC)
-    if (beep_toggle_enabled) {
-        beep_phase = !beep_phase;
-        if (beep_phase)
-            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
-        else
-            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
-    }
+}
 }
 
 /************************** UART0 ISR **************************/

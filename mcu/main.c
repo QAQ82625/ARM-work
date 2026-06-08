@@ -322,17 +322,22 @@ void led_update(void) {
         out &= ~LED_RX;
     }
 
-    // Alarm LED follows alarm_ringing
-    if (alarm_ringing)
-        out |= LED_ALARM;
-    else
-        out &= ~LED_ALARM;
+    // In night mode, only keep heartbeat LED; suppress all others
+    if (night_mode) {
+        out &= LED_HEARTBEAT;  // mask all except heartbeat
+    } else {
+        // Alarm LED follows alarm_ringing
+        if (alarm_ringing)
+            out |= LED_ALARM;
+        else
+            out &= ~LED_ALARM;
 
-    // Edit LED follows edit_mode
-    if (edit_mode != EDIT_NONE)
-        out |= LED_EDIT;
-    else
-        out &= ~LED_EDIT;
+        // Edit LED follows edit_mode
+        if (edit_mode != EDIT_NONE)
+            out |= LED_EDIT;
+        else
+            out &= ~LED_EDIT;
+    }
 
     led_byte = out;
 
@@ -409,9 +414,7 @@ void alarm_check(void) {
                 if (alarm_beep_timer >= 2) {
                     alarm_beep_phase = 0;
                     alarm_beep_timer = 0;
-                    alarm_total_timer = 100;  // force stop after one cycle (2 beeps per second)
-                    // Actually reset pattern: after 2 beeps, long pause
-                    // Simpler: just 2 beeps then stop for now
+                    // Pattern repeats until alarm_total_timer reaches 100 (10s)
                 }
                 break;
         }
@@ -645,20 +648,15 @@ void update_display(void) {
         }
     }
 
-    // FORMAT RIGHT: reverse the display string and dp positions
+    // FORMAT RIGHT: reverse the display string.
+    // dp_buf stays the same — dots fall between the same digit pairs,
+    // just displayed in reverse order. (e.g., 12.30.45 → 54.03.21)
     if (format_direction == 1) {
         char rev[9];
-        uint8_t rev_dp[8];
         for (j = 0; j < 8; j++) {
             rev[j] = str[7 - j];
-            // dp follows "next digit" rule for RIGHT mode
-            if (j > 0 && dp_buf[7 - (j - 1)])
-                rev_dp[j] = 1;
-            else
-                rev_dp[j] = 0;
         }
         memcpy(str, rev, 8);
-        memcpy(dp_buf, rev_dp, 8);
     }
 
     // Store ASCII chars for *EVT:DISP
@@ -927,18 +925,25 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
 }
 
 /************************** Edit state machine **************************/
+// Backup copies for cancel (restore original values)
+static uint8_t  backup_hour, backup_minute, backup_second;
+static uint16_t backup_year;
+static uint8_t  backup_month, backup_day;
+static uint8_t  backup_alarm_hour, backup_alarm_minute, backup_alarm_second;
+
 void edit_enter(uint8_t mode) {
+    // Backup current values before entering edit mode
+    backup_hour = hour; backup_minute = minute; backup_second = second;
+    backup_year = year; backup_month = month; backup_day = day;
+    backup_alarm_hour = alarm_hour; backup_alarm_minute = alarm_minute;
+    backup_alarm_second = alarm_second;
+
     edit_mode = mode;
     edit_field = 0;
     edit_timeout = 0;
     edit_blink = 0;
     edit_blink_timer = 0;
-
-    // Copy current values to edit buffer (so cancel can restore)
-    // For simplicity, we edit the live values; cancel does not restore
-    // (assignment allows this: "不保存" means discard changes,
-    //  but since we edit live, we need backup)
-    // TODO: add backup/restore for cancel
+    update_display();
 }
 
 void edit_exit(uint8_t save) {
@@ -955,6 +960,12 @@ void edit_exit(uint8_t save) {
             sprintf(value, "%02d.%02d.%02d", alarm_hour, alarm_minute, alarm_second);
             send_event_edit("ALARM", value);
         }
+    } else {
+        // Cancel: restore original values
+        hour = backup_hour; minute = backup_minute; second = backup_second;
+        year = backup_year; month = backup_month; day = backup_day;
+        alarm_hour = backup_alarm_hour; alarm_minute = backup_alarm_minute;
+        alarm_second = backup_alarm_second;
     }
 
     edit_mode = EDIT_NONE;
@@ -970,19 +981,10 @@ void edit_tick(void) {
     // 5-second timeout: auto-exit without save
     edit_timeout++;
     if (edit_timeout >= 500) {  // 500 * 10ms = 5s
-        edit_exit(0);
+        edit_exit(0);  // cancel
         return;
     }
-
-    // Blink the current edit field (~300ms period)
-    edit_blink_timer++;
-    if (edit_blink_timer >= 3) {  // 3 * 100ms = 300ms
-        edit_blink_timer = 0;
-        edit_blink = !edit_blink;
-    }
-
-    // Apply blink to display: blank the editing field during blink-on phase
-    // The blinking is done in update_display by checking edit_mode and edit_blink
+    // Blink is handled in the 100ms loop via edit_blink_timer
 }
 
 /************************** Command handlers **************************/
@@ -1642,6 +1644,16 @@ int main(void) {
 
             // Update LED (writes to PCA9557)
             led_update();
+
+            // Edit blink timer (runs even when display isn't updated each second)
+            if (edit_mode != EDIT_NONE) {
+                edit_blink_timer++;
+                if (edit_blink_timer >= 3) {  // 300ms blink period
+                    edit_blink_timer = 0;
+                    edit_blink = !edit_blink;
+                    update_display();  // refresh to show/hide blinking fields
+                }
+            }
 
             // Scroll advance
             if (scroll_active && scroll_len > 8) {

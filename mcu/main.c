@@ -213,7 +213,6 @@ static uint8_t   uart_tx_timer = 0;        // TX LED blink duration
 static uint8_t   uart_rx_timer = 0;        // RX LED blink duration
 
 /************************** Key state **************************/
-static uint8_t  key_prev_raw = 0xFF;       // previous raw key state (I2C + GPIO)
 static uint16_t key_debounce[10] = {0};    // debounce counter per key
 static uint16_t key_hold_time[10] = {0};   // hold duration in 10ms ticks per key
 static uint8_t  key_pressed[10] = {0};     // current stable state per key
@@ -597,7 +596,6 @@ void update_display(void) {
         // Build 8-char window into scroll message
         uint8_t pos = scroll_pos;
         for (j = 0; j < 8; j++) {
-            uint8_t idx = (pos + j) % scroll_len;
             // wrap: if pos+j >= len, pad with space or wrap from start
             if (pos + j < scroll_len) {
                 str[j] = scroll_msg[pos + j];
@@ -816,8 +814,6 @@ void key_scan(void) {
             }
         }
     }
-
-    key_prev_raw = raw_state;
 }
 
 /************************** Key action dispatch **************************/
@@ -1786,7 +1782,6 @@ void S800_GPIO_Init(void) {
 }
 
 void S800_I2C0_Init(void) {
-    uint8_t result;
     SysCtlPeripheralEnable(SYSCTL_PERIPH_I2C0);
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);
     GPIOPinConfigure(GPIO_PB2_I2C0SCL);
@@ -1798,13 +1793,13 @@ void S800_I2C0_Init(void) {
     I2CMasterEnable(I2C0_BASE);
 
     // TCA6424: Port0 = input (keys), Port1 = output (segments), Port2 = output (digit select)
-    result = I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT0, 0xFF);
-    result = I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT1, 0x00);
-    result = I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT2, 0x00);
+    (void)I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT0, 0xFF);
+    (void)I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT1, 0x00);
+    (void)I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT2, 0x00);
 
     // PCA9557: all output (LEDs)
-    result = I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_CONFIG, 0x00);
-    result = I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, 0xFF);  // all off (active low)
+    (void)I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_CONFIG, 0x00);
+    (void)I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, 0xFF);  // all off (active low)
 }
 
 uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {
@@ -1825,13 +1820,13 @@ uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {
 }
 
 uint8_t I2C0_ReadByte(uint8_t DevAddr, uint8_t RegAddr) {
-    uint8_t value, rop;
+    uint8_t value;
     while (I2CMasterBusy(I2C0_BASE)) {};
     I2CMasterSlaveAddrSet(I2C0_BASE, DevAddr, false);
     I2CMasterDataPut(I2C0_BASE, RegAddr);
     I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_SEND);
     while (I2CMasterBusBusy(I2C0_BASE));
-    rop = (uint8_t)I2CMasterErr(I2C0_BASE);
+    (void)I2CMasterErr(I2C0_BASE);
     Delay_us(10);
     I2CMasterSlaveAddrSet(I2C0_BASE, DevAddr, true);
     I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);
@@ -1876,7 +1871,6 @@ void SysTick_Handler(void) {
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0);
     else
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, 0);
-}
 }
 
 /************************** UART0 ISR **************************/

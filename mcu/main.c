@@ -1560,8 +1560,18 @@ void process_uart_command(void) {
         cmd_set_key(params);
     } else if (MATCH_CMD(token_start, "*SET:MODE", 8)) {
         cmd_set_mode(params);
-    } else if (MATCH_CMD(token_start, "*GET", 4)) {
-        cmd_get(params);
+    } else if (strncmp(token_start, "*GET", 4) == 0 &&
+               (int)strlen(token_start) <= 12) {
+        // *GET, *GET:DATE, *GET:TIME, *GET:FORMAT
+        // Sub-command may be in the token suffix (*GET:TIME) or in params
+        const char *sub = params;
+        if (token_start[4] == ':' && token_start[5] != '\0') {
+            sub = token_start + 5;  // skip "*GET:"
+        } else if (token_start[4] != '\0') {
+            // token like "*GETDATE" (no colon) — extract after *GET
+            sub = token_start + 4;
+        }
+        cmd_get(sub);
     } else if (MATCH_CMD(token_start, "*PING", 5)) {
         cmd_ping();
     } else {

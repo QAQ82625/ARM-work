@@ -1523,56 +1523,81 @@ void process_uart_command(void) {
     char *params = (saved_token_end == '\0') ? p : p + 1;
     while (*params == ' ' || *params == '\t') params++;
 
+    // ---- Handle space before colon: "*SET : TIME ..." ----
+    // Reconstruct token: if token is "*SET" (or "*GET") and params starts
+    // with ":", prepend the sub-command to complete the token.
+    char reconstructed[32];
+    int token_len_orig = (int)strlen(token_start);
+    for (int i = 0; token_start[i]; i++)
+        token_start[i] = toupper((unsigned char)token_start[i]);
+
+    if (token_start[0] == '*' && strchr(token_start, ':') == NULL &&
+        params[0] == ':') {
+        // Extract sub-command word from params: skip ':' and any spaces
+        // to get e.g. "TIME" from ": TIME HOUR 15"
+        char *sub_start = params + 1;  // skip ':'
+        while (*sub_start == ' ' || *sub_start == '\t') sub_start++;
+        char *sub_end = sub_start;
+        while (*sub_end && *sub_end != ' ' && *sub_end != '\t') sub_end++;
+        char saved_sub = *sub_end;
+        *sub_end = '\0';
+
+        snprintf(reconstructed, sizeof(reconstructed), "%s:%s", token_start, sub_start);
+        // Move params past the sub-command
+        *sub_end = saved_sub;
+        params = sub_end;
+        while (*params == ' ' || *params == '\t') params++;
+    } else {
+        // Keep token as-is
+        strncpy(reconstructed, token_start, sizeof(reconstructed));
+        reconstructed[sizeof(reconstructed) - 1] = '\0';
+    }
+
     // Save original-case params for commands that need it (MSG)
     char params_original[64];
     strncpy(params_original, params, 64);
     params_original[63] = '\0';
 
-    // Uppercase the command token for matching
-    int token_len = (int)strlen(token_start);
-    for (int i = 0; token_start[i]; i++)
-        token_start[i] = toupper((unsigned char)token_start[i]);
-
-    // Abbreviation helper: check if full_cmd starts with token_start
-    // and token_start >= min_len
+    // Use reconstructed token for dispatch
+    char *tok = reconstructed;
     #define MATCH_CMD(tok, full, minlen) \
         ((int)strlen(tok) >= (minlen) && strncmp(tok, full, strlen(tok)) == 0)
 
     // Dispatch command
-    if (MATCH_CMD(token_start, "*RST", 4)) {
+    if (MATCH_CMD(tok, "*RST", 4)) {
         cmd_rst(params);
-    } else if (MATCH_CMD(token_start, "*SET:DATE", 8)) {
+    } else if (MATCH_CMD(tok, "*SET:DATE", 8)) {
         cmd_set_date(params);
-    } else if (MATCH_CMD(token_start, "*SET:TIME", 8)) {
+    } else if (MATCH_CMD(tok, "*SET:TIME", 8)) {
         cmd_set_time(params);
-    } else if (MATCH_CMD(token_start, "*SET:DISPLAY", 9)) {
+    } else if (MATCH_CMD(tok, "*SET:DISPLAY", 9)) {
         cmd_set_display(params);
-    } else if (MATCH_CMD(token_start, "*SET:FORMAT", 9)) {
+    } else if (MATCH_CMD(tok, "*SET:FORMAT", 9)) {
         cmd_set_format(params);
-    } else if (MATCH_CMD(token_start, "*SET:MSG", 7)) {
+    } else if (MATCH_CMD(tok, "*SET:MSG", 7)) {
         // Use original-case params for message text
         cmd_set_msg(params_original);
-    } else if (MATCH_CMD(token_start, "*SET:BEEP", 8)) {
+    } else if (MATCH_CMD(tok, "*SET:BEEP", 8)) {
         cmd_set_beep(params);
-    } else if (MATCH_CMD(token_start, "*SET:LED", 7)) {
+    } else if (MATCH_CMD(tok, "*SET:LED", 7)) {
         cmd_set_led(params);
-    } else if (MATCH_CMD(token_start, "*SET:KEY", 7)) {
+    } else if (MATCH_CMD(tok, "*SET:KEY", 7)) {
         cmd_set_key(params);
-    } else if (MATCH_CMD(token_start, "*SET:MODE", 8)) {
+    } else if (MATCH_CMD(tok, "*SET:MODE", 8)) {
         cmd_set_mode(params);
-    } else if (strncmp(token_start, "*GET", 4) == 0 &&
-               (int)strlen(token_start) <= 12) {
+    } else if (strncmp(tok, "*GET", 4) == 0 &&
+               (int)strlen(tok) <= 12) {
         // *GET, *GET:DATE, *GET:TIME, *GET:FORMAT
-        // Sub-command may be in the token suffix (*GET:TIME) or in params
+        // Sub-command may be in the tok suffix (*GET:TIME) or in params
         const char *sub = params;
-        if (token_start[4] == ':' && token_start[5] != '\0') {
-            sub = token_start + 5;  // skip "*GET:"
-        } else if (token_start[4] != '\0') {
-            // token like "*GETDATE" (no colon) — extract after *GET
-            sub = token_start + 4;
+        if (tok[4] == ':' && tok[5] != '\0') {
+            sub = tok + 5;  // skip "*GET:"
+        } else if (tok[4] != '\0') {
+            // tok like "*GETDATE" (no colon) — extract after *GET
+            sub = tok + 4;
         }
         cmd_get(sub);
-    } else if (MATCH_CMD(token_start, "*PING", 5)) {
+    } else if (MATCH_CMD(tok, "*PING", 5)) {
         cmd_ping();
     } else {
         send_response("ERROR SYNTAX\r\n");

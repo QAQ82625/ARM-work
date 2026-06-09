@@ -167,8 +167,9 @@ volatile uint8_t  rightshift = 0x01;
 uint32_t ui32SysClock, ui32IntPriorityMask;
 uint8_t uart_receive_char;
 int i = 0;
-char receive[64];
+char receive[65];                                // 64 chars + null terminator
 volatile uint8_t uart_cmd_ready = 0;
+static uint8_t receive_overflow = 0;             // 1 = line exceeded 64 chars
 const char *ATCLASS = "AT+CLASS#";
 const char *ATCODE = "AT+STUDENTCODE#";
 const char *CLASS = "CLASSF17XXXXX";
@@ -180,13 +181,14 @@ volatile uint16_t year = 2026;
 volatile uint8_t  month = 6, day = 8;
 
 /************************** Alarm state **************************/
-volatile uint8_t  alarm_hour = 0, alarm_minute = 0, alarm_second = 0;
+volatile uint8_t  alarm_hour = 6, alarm_minute = 0, alarm_second = 0;  // 06:00 default
 volatile uint8_t  alarm_enabled = 1;
 volatile uint8_t  alarm_ringing = 0;
 static uint8_t    alarm_beep_phase = 0;    // 0=off-wait, 1=on, 2=off-wait2, 3=on
 static uint8_t    alarm_beep_timer = 0;    // 100ms ticks per phase
 static uint8_t    alarm_total_timer = 0;   // total 100ms ticks (max 100 = 10s)
 static uint8_t    alarm_snooze = 0;        // suppress flag for night mode
+static uint8_t    alarm_led_blink = 0;     // alternate-state for alarm LED fast blink
 
 /************************** Display state **************************/
 uint8_t  disp_mode = DISP_MODE_TIME;
@@ -205,9 +207,12 @@ uint8_t  scroll_active = 0;                // scroll message is active
 uint8_t  scroll_pos = 0;                   // current scroll offset
 uint8_t  scroll_len = 0;                   // length of scroll message
 static uint8_t scroll_timer = 0;           // 100ms ticks for scroll advance
+static uint8_t scroll_cycle_count = 0;     // completed cycles for auto-return
+static uint8_t scroll_static_timer = 0;    // for ≤8-char static display (1s ticks)
 
 /************************** LED state **************************/
 volatile uint8_t led_byte = 0x00;          // PCA9557 LED byte
+static uint8_t   led_takeover = 0;         // 1 = *SET:LED override, inhibits auto-LED logic
 static uint8_t   led_heartbeat_timer = 0;  // 100ms ticks for heartbeat toggle
 static uint8_t   uart_tx_timer = 0;        // TX LED blink duration
 static uint8_t   uart_rx_timer = 0;        // RX LED blink duration
@@ -235,6 +240,11 @@ static uint8_t uart_tx_activity = 0;
 static uint8_t suppress_key_event = 0;   // 1 = don't send *EVT:KEY (for *SET:KEY)
 static uint8_t beep_timer = 0;           // remaining beep duration in 100ms ticks
 static uint8_t beep_active = 0;          // 1 = beeper is sounding
+
+/************************** Shared buffers (file-scope to save stack) **************************/
+static char cmd_parse_buf[64];     // command parsing buffer
+static char cmd_token_buf[32];     // reconstructed token
+static char cmd_params_buf[64];    // original-case params copy
 
 /************************** Utility functions **************************/
 void Delay_us(uint32_t us) {
@@ -294,6 +304,15 @@ int match_abbrev(const char *input, const char *full) {
 
 /************************** LED management **************************/
 void led_update(void) {
+    // If *SET:LED took over, skip all auto-logic — just write led_byte as-is
+    if (led_takeover) {
+        SysTickIntDisable();
+        while (I2CMasterBusy(I2C0_BASE)) {};
+        I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
+        SysTickIntEnable();
+        return;
+    }
+
     uint8_t out = led_byte;
 
     // Heartbeat blink: toggle every 500ms
@@ -321,15 +340,22 @@ void led_update(void) {
         out &= ~LED_RX;
     }
 
-    // In night mode, only keep heartbeat LED; suppress all others
+    // Night mode: only keep heartbeat LED; suppress all others
     if (night_mode) {
-        out &= LED_HEARTBEAT;  // mask all except heartbeat
+        out &= LED_HEARTBEAT;
     } else {
-        // Alarm LED follows alarm_ringing
-        if (alarm_ringing)
-            out |= LED_ALARM;
-        else
+        // LED1 (ALARM): enabled=steady on, ringing=fast blink (toggle every 300ms)
+        if (alarm_ringing) {
+            // Fast blink: toggle via alarm_led_blink each 300ms tick
+            if (alarm_led_blink)
+                out |= LED_ALARM;
+            else
+                out &= ~LED_ALARM;
+        } else if (alarm_enabled) {
+            out |= LED_ALARM;   // armed = steady on
+        } else {
             out &= ~LED_ALARM;
+        }
 
         // Edit LED follows edit_mode
         if (edit_mode != EDIT_NONE)
@@ -343,6 +369,7 @@ void led_update(void) {
     // Write to PCA9557 with SysTick disabled to avoid I2C bus conflict
     // (SysTick ISR also writes to TCA6424 via I2C0 at 1kHz)
     SysTickIntDisable();
+    while (I2CMasterBusy(I2C0_BASE)) {};  // drain in-flight ISR transaction
     I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
     SysTickIntEnable();
 }
@@ -756,8 +783,11 @@ void key_scan(void) {
     int i;
 
     // Read I2C keys from TCA6424 Port0 (8 keys, active low)
-    // Disable SysTick to avoid I2C bus conflict with display scanning ISR
+    // Disable SysTick AND wait for any in-progress ISR I2C transaction
+    // to complete before starting our own. Otherwise the bus state
+    // machine gets corrupted, causing phantom key reads.
     SysTickIntDisable();
+    while (I2CMasterBusy(I2C0_BASE)) {};  // drain ISR's in-flight transaction
     i2c_keys = I2C0_ReadByte(TCA6424_I2CADDR, TCA6424_INPUT_PORT0);
     SysTickIntEnable();
 
@@ -864,11 +894,17 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
             break;
 
         case 1: // FUNC
+            if (alarm_ringing) {
+                alarm_stop();  // stop alarm immediately
+                break;
+            }
             if (long_press) {
-                // Long FUNC = save and exit (same as SAVE)
-                edit_exit(1);
+                // Long FUNC = save and exit
+                if (edit_mode != EDIT_NONE) {
+                    edit_exit(1);
+                }
             } else {
-                // Short FUNC: cycle edit mode or stop alarm
+                // Short FUNC: cycle edit mode in a loop
                 if (edit_mode == EDIT_NONE) {
                     edit_enter(EDIT_DATE);
                 } else if (edit_mode == EDIT_DATE) {
@@ -876,7 +912,8 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
                 } else if (edit_mode == EDIT_TIME) {
                     edit_enter(EDIT_ALARM);
                 } else {
-                    edit_exit(0);  // exit without save
+                    // EDIT_ALARM: loop back to DATE
+                    edit_enter(EDIT_DATE);
                 }
             }
             break;
@@ -909,8 +946,30 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
             update_display();
             break;
 
-        case 7: // EXT
-            // Reserved for expansion
+        case 7: // EXT — toggle alarm enable/disable
+            alarm_enabled = !alarm_enabled;
+            if (alarm_enabled) {
+                send_response("*EVT:ALARM:SET ON\r\n");
+            } else {
+                alarm_ringing = 0;
+                beep_off();
+                send_response("*EVT:ALARM:SET OFF\r\n");
+            }
+            // Brief visual confirmation: blink edit LED once
+            {
+                uint8_t saved = led_byte;
+                led_byte |= LED_EDIT;
+                SysTickIntDisable();
+                while (I2CMasterBusy(I2C0_BASE)) {};
+                I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
+                SysTickIntEnable();
+                Delay(100000);
+                led_byte = saved;
+                SysTickIntDisable();
+                while (I2CMasterBusy(I2C0_BASE)) {};
+                I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
+                SysTickIntEnable();
+            }
             break;
 
         case 8: // USER1 — request PC time sync
@@ -960,8 +1019,8 @@ void edit_exit(uint8_t save) {
             sprintf(value, "%02d.%02d.%02d", alarm_hour, alarm_minute, alarm_second);
             send_event_edit("ALARM", value);
         }
-    } else {
-        // Cancel: restore original values
+    } else if (edit_mode != EDIT_NONE) {
+        // Cancel: restore original values (only if actually in edit mode)
         hour = backup_hour; minute = backup_minute; second = backup_second;
         year = backup_year; month = backup_month; day = backup_day;
         alarm_hour = backup_alarm_hour; alarm_minute = backup_alarm_minute;
@@ -976,15 +1035,9 @@ void edit_exit(uint8_t save) {
 }
 
 void edit_tick(void) {
-    if (edit_mode == EDIT_NONE) return;
-
-    // 5-second timeout: auto-exit without save
-    edit_timeout++;
-    if (edit_timeout >= 500) {  // 500 * 10ms = 5s
-        edit_exit(0);  // cancel
-        return;
-    }
-    // Blink is handled in the 100ms loop via edit_blink_timer
+    // No auto-exit timeout. Only FUNC-long or SAVE exits edit mode.
+    // Blink is handled in the 100ms loop via edit_blink_timer.
+    (void)edit_timeout;  // unused, kept for backward struct compat
 }
 
 /************************** Command handlers **************************/
@@ -1044,12 +1097,14 @@ void cmd_rst(const char *params) {
         hour = 0; minute = 0; second = 0;
     }
     if (reset_alarm) {
-        alarm_hour = 0; alarm_minute = 0; alarm_second = 0;
+        alarm_hour = 6; alarm_minute = 0; alarm_second = 0;  // 06:00, won't match 00:00
     }
 
     format_direction = 0;   // FORMAT=LEFT
     disp_on = 1;
     scroll_active = 0;
+    scroll_cycle_count = 0; scroll_static_timer = 0;
+    led_takeover = 0;        // exit LED takeover
     disp_mode = DISP_MODE_TIME;
     edit_exit(0);
 
@@ -1310,6 +1365,8 @@ void cmd_set_msg(const char *params) {
     scroll_pos = 0;
     scroll_active = 1;
     scroll_timer = 0;
+    scroll_cycle_count = 0;    // reset auto-return cycle counter
+    scroll_static_timer = 0;   // reset static hold timer
 
     update_display();
     send_response("OK\r\n");
@@ -1340,7 +1397,7 @@ void cmd_set_beep(const char *params) {
     send_response("OK\r\n");
 }
 
-// *SET:LED <hex2>  — direct LED byte set
+// *SET:LED <hex2>  — direct LED byte set (takeover mode)
 void cmd_set_led(const char *params) {
     const char *p = params;
     while (*p == ' ' || *p == '\t') p++;
@@ -1363,8 +1420,20 @@ void cmd_set_led(const char *params) {
         }
     }
 
-    led_byte = (uint8_t)(val & 0xFF);
+    uint8_t v = (uint8_t)(val & 0xFF);
+
+    if (v == 0x00) {
+        // 00 exits takeover and restores auto-LED logic
+        led_takeover = 0;
+        led_byte = LED_HEARTBEAT;  // restore default heartbeat
+    } else {
+        // Enter takeover: suppress all auto-LED logic
+        led_takeover = 1;
+        led_byte = v;
+    }
+
     SysTickIntDisable();
+    while (I2CMasterBusy(I2C0_BASE)) {};
     I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
     SysTickIntEnable();
     send_response("OK\r\n");
@@ -1439,11 +1508,90 @@ void cmd_set_mode(const char *params) {
     }
 }
 
-// *GET [DATE] [TIME] [FORMAT]
+// *SET:ALARM HOUR <val> MINute <val> SECond <val> / OFF
+// Required basic command per §10 of development spec
+void cmd_set_alarm(const char *params) {
+    char buf[64], *p, *token;
+    strncpy(buf, params, sizeof(buf));
+    buf[sizeof(buf) - 1] = '\0';
+
+    p = buf;
+    int any_set = 0;
+
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') break;
+
+        token = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        char saved = *p;
+        *p = '\0';
+
+        // Uppercase token
+        char *tp = token;
+        while (*tp) { *tp = toupper((unsigned char)*tp); tp++; }
+
+        // Check for OFF (disable alarm)
+        if (match_abbrev(token, "OFF")) {
+            alarm_enabled = 0;
+            alarm_ringing = 0;
+            beep_off();
+            send_response("OK\r\n");
+            return;
+        }
+
+        // Get value
+        char *val_str = NULL;
+        if (saved != '\0') {
+            p++;
+            while (*p == ' ' || *p == '\t') p++;
+            val_str = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            saved = *p;
+            *p = '\0';
+        }
+
+        if (val_str == NULL || val_str[0] == '\0') {
+            send_response("ERROR SYNTAX\r\n");
+            return;
+        }
+
+        int val = atoi(val_str);
+
+        if (match_abbrev(token, "HOUR")) {
+            if (val < 0 || val > 23) { send_response("ERROR RANGE\r\n"); return; }
+            alarm_hour = (uint8_t)val;
+            any_set = 1;
+        } else if (match_abbrev(token, "MINute")) {
+            if (val < 0 || val > 59) { send_response("ERROR RANGE\r\n"); return; }
+            alarm_minute = (uint8_t)val;
+            any_set = 1;
+        } else if (match_abbrev(token, "SECond")) {
+            if (val < 0 || val > 59) { send_response("ERROR RANGE\r\n"); return; }
+            alarm_second = (uint8_t)val;
+            any_set = 1;
+        } else {
+            send_response("ERROR SYNTAX\r\n");
+            return;
+        }
+
+        if (saved == '\0') break;
+        *p = saved;
+    }
+
+    if (any_set) {
+        alarm_enabled = 1;  // setting alarm values auto-enables
+        send_response("OK\r\n");
+    } else {
+        send_response("ERROR SYNTAX\r\n");
+    }
+}
+
+// *GET [DATE] [TIME] [FORMAT] [ALARM] [DISP] [MODE]
 void cmd_get(const char *params) {
     char buf[32], *p;
-    strncpy(buf, params, 32);
-    buf[31] = '\0';
+    strncpy(buf, params, sizeof(buf));
+    buf[sizeof(buf) - 1] = '\0';
 
     p = buf;
     while (*p == ' ' || *p == '\t') p++;
@@ -1453,20 +1601,40 @@ void cmd_get(const char *params) {
     while (*p == ' ' || *p == '\t') p++;
 
     if (*p == '\0' || match_abbrev(p, "TIME")) {
-        char resp[32];
+        char resp[48];
         sprintf(resp, "OK %02d %02d %02d\r\n", hour, minute, second);
         send_response(resp);
         return;
     }
     if (match_abbrev(p, "DATE")) {
-        char resp[32];
+        char resp[48];
         sprintf(resp, "OK %04d %02d %02d\r\n", year, month, day);
         send_response(resp);
         return;
     }
     if (match_abbrev(p, "FORMAT")) {
-        char resp[32];
+        char resp[48];
         sprintf(resp, "OK %s\r\n", format_direction ? "RIGHT" : "LEFT");
+        send_response(resp);
+        return;
+    }
+    if (match_abbrev(p, "ALARM")) {
+        char resp[48];
+        sprintf(resp, "OK %02d %02d %02d %s\r\n",
+            alarm_hour, alarm_minute, alarm_second,
+            alarm_enabled ? "ON" : "OFF");
+        send_response(resp);
+        return;
+    }
+    if (match_abbrev(p, "DISP")) {
+        char resp[48];
+        sprintf(resp, "OK %s\r\n", disp_on ? "ON" : "OFF");
+        send_response(resp);
+        return;
+    }
+    if (match_abbrev(p, "MODE")) {
+        char resp[48];
+        sprintf(resp, "OK %s\r\n", night_mode ? "NIGHT" : "DAY");
         send_response(resp);
         return;
     }
@@ -1483,15 +1651,15 @@ void cmd_ping(void) {
 
 /************************** UART command processor **************************/
 void process_uart_command(void) {
-    char cmd[64];
     uart_cmd_ready = 0;  // clear flag first
 
-    strncpy(cmd, receive, 64);
-    cmd[63] = '\0';
+    // Use file-scope buffers to minimize stack usage (was ~224 bytes on stack)
+    strncpy(cmd_parse_buf, receive, sizeof(cmd_parse_buf));
+    cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';
     memset(receive, 0, sizeof(receive));
 
     // Trim whitespace
-    char *p = cmd;
+    char *p = cmd_parse_buf;
     while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
 
     int len = (int)strlen(p);
@@ -1523,18 +1691,13 @@ void process_uart_command(void) {
     char *params = (saved_token_end == '\0') ? p : p + 1;
     while (*params == ' ' || *params == '\t') params++;
 
-    // ---- Handle space before colon: "*SET : TIME ..." ----
-    // Reconstruct token: if token is "*SET" (or "*GET") and params starts
-    // with ":", prepend the sub-command to complete the token.
-    char reconstructed[32];
-    int token_len_orig = (int)strlen(token_start);
+    // Uppercase token
     for (int i = 0; token_start[i]; i++)
         token_start[i] = toupper((unsigned char)token_start[i]);
 
+    // ---- Handle space before colon: "*SET : TIME ..." ----
     if (token_start[0] == '*' && strchr(token_start, ':') == NULL &&
         params[0] == ':') {
-        // Extract sub-command word from params: skip ':' and any spaces
-        // to get e.g. "TIME" from ": TIME HOUR 15"
         char *sub_start = params + 1;  // skip ':'
         while (*sub_start == ' ' || *sub_start == '\t') sub_start++;
         char *sub_end = sub_start;
@@ -1542,24 +1705,21 @@ void process_uart_command(void) {
         char saved_sub = *sub_end;
         *sub_end = '\0';
 
-        snprintf(reconstructed, sizeof(reconstructed), "%s:%s", token_start, sub_start);
-        // Move params past the sub-command
+        snprintf(cmd_token_buf, sizeof(cmd_token_buf), "%s:%s", token_start, sub_start);
         *sub_end = saved_sub;
         params = sub_end;
         while (*params == ' ' || *params == '\t') params++;
     } else {
-        // Keep token as-is
-        strncpy(reconstructed, token_start, sizeof(reconstructed));
-        reconstructed[sizeof(reconstructed) - 1] = '\0';
+        strncpy(cmd_token_buf, token_start, sizeof(cmd_token_buf));
+        cmd_token_buf[sizeof(cmd_token_buf) - 1] = '\0';
     }
 
     // Save original-case params for commands that need it (MSG)
-    char params_original[64];
-    strncpy(params_original, params, 64);
-    params_original[63] = '\0';
+    strncpy(cmd_params_buf, params, sizeof(cmd_params_buf));
+    cmd_params_buf[sizeof(cmd_params_buf) - 1] = '\0';
 
     // Use reconstructed token for dispatch
-    char *tok = reconstructed;
+    char *tok = cmd_token_buf;
     #define MATCH_CMD(tok, full, minlen) \
         ((int)strlen(tok) >= (minlen) && strncmp(tok, full, strlen(tok)) == 0)
 
@@ -1576,7 +1736,7 @@ void process_uart_command(void) {
         cmd_set_format(params);
     } else if (MATCH_CMD(tok, "*SET:MSG", 7)) {
         // Use original-case params for message text
-        cmd_set_msg(params_original);
+        cmd_set_msg(cmd_params_buf);
     } else if (MATCH_CMD(tok, "*SET:BEEP", 8)) {
         cmd_set_beep(params);
     } else if (MATCH_CMD(tok, "*SET:LED", 7)) {
@@ -1585,22 +1745,21 @@ void process_uart_command(void) {
         cmd_set_key(params);
     } else if (MATCH_CMD(tok, "*SET:MODE", 8)) {
         cmd_set_mode(params);
+    } else if (MATCH_CMD(tok, "*SET:ALARM", 9)) {
+        cmd_set_alarm(params);
     } else if (strncmp(tok, "*GET", 4) == 0 &&
                (int)strlen(tok) <= 12) {
-        // *GET, *GET:DATE, *GET:TIME, *GET:FORMAT
-        // Sub-command may be in the tok suffix (*GET:TIME) or in params
         const char *sub = params;
         if (tok[4] == ':' && tok[5] != '\0') {
-            sub = tok + 5;  // skip "*GET:"
+            sub = tok + 5;
         } else if (tok[4] != '\0') {
-            // tok like "*GETDATE" (no colon) — extract after *GET
             sub = tok + 4;
         }
         cmd_get(sub);
     } else if (MATCH_CMD(tok, "*PING", 5)) {
         cmd_ping();
     } else {
-        send_response("ERROR SYNTAX\r\n");
+        send_response("ERROR\r\n");
     }
     #undef MATCH_CMD
 }
@@ -1677,6 +1836,16 @@ int main(void) {
             // LED heartbeat timer
             led_heartbeat_timer++;
 
+            // Alarm LED fast-blink phase: toggle every 2 ticks (200ms)
+            if (alarm_ringing) {
+                static uint8_t alarm_blink_timer = 0;
+                alarm_blink_timer++;
+                if (alarm_blink_timer >= 2) {
+                    alarm_blink_timer = 0;
+                    alarm_led_blink = !alarm_led_blink;
+                }
+            }
+
             // Update LED (writes to PCA9557)
             led_update();
 
@@ -1690,20 +1859,50 @@ int main(void) {
                 }
             }
 
-            // Scroll advance
-            if (scroll_active && scroll_len > 8) {
-                scroll_timer++;
-                uint8_t speed = scroll_speed_level ? SCROLL_SPEED_FAST : SCROLL_SPEED_SLOW;
-                if (scroll_timer >= speed) {
-                    scroll_timer = 0;
-                    if (format_direction == 0) {  // LEFT
-                        scroll_pos++;
-                        if (scroll_pos >= scroll_len + 8) scroll_pos = 0;
-                    } else {  // RIGHT
-                        if (scroll_pos == 0) scroll_pos = scroll_len + 8 - 1;
-                        else scroll_pos--;
+            // Scroll processing (with auto-return per §12)
+            if (scroll_active) {
+                if (scroll_len <= 8) {
+                    // ≤8 chars: static display for 2-3s then auto-return to clock
+                    scroll_static_timer++;
+                    if (scroll_static_timer >= 25) {  // 25*100ms = 2.5s
+                        scroll_active = 0;
+                        scroll_len = 0;
+                        scroll_static_timer = 0;
+                        scroll_pos = 0;
+                        memset(scroll_msg, 0, sizeof(scroll_msg));
+                        update_display();
                     }
-                    update_display();
+                } else {
+                    // >8 chars: advance; auto-return after 1 full cycle
+                    scroll_timer++;
+                    uint8_t speed = scroll_speed_level ? SCROLL_SPEED_FAST : SCROLL_SPEED_SLOW;
+                    if (scroll_timer >= speed) {
+                        scroll_timer = 0;
+                        if (format_direction == 0) {  // LEFT
+                            scroll_pos++;
+                            if (scroll_pos >= scroll_len + 8) {
+                                scroll_pos = 0;
+                                scroll_cycle_count++;
+                            }
+                        } else {  // RIGHT
+                            if (scroll_pos == 0) {
+                                scroll_pos = scroll_len + 8 - 1;
+                                scroll_cycle_count++;
+                            } else {
+                                scroll_pos--;
+                            }
+                        }
+                        // Auto-return after 1 full cycle
+                        if (scroll_cycle_count >= 1) {
+                            scroll_active = 0;
+                            scroll_len = 0;
+                            scroll_cycle_count = 0;
+                            scroll_pos = 0;
+                            scroll_timer = 0;
+                            memset(scroll_msg, 0, sizeof(scroll_msg));
+                        }
+                        update_display();
+                    }
                 }
             }
 
@@ -1890,20 +2089,38 @@ void UART0_Handler(void) {
         if (ch == '\r') continue;  // skip CR
         if (ch == '\n') {
             // Complete line received
+            if (receive_overflow) {
+                // Line exceeded 64 chars — discard and report
+                receive_overflow = 0;
+                i = 0;
+                memset(receive, 0, sizeof(receive));
+                UARTStringPut((uint8_t *)"ERROR LINE TOO LONG\r\n");
+                return;
+            }
             receive[i] = '\0';
             i = 0;
             uart_cmd_ready = 1;
             return;
         }
 
-        // Accumulate character
-        if (i < 63) {
+        // Accumulate character (allow up to 64 chars, index 0-63)
+        if (i < 64) {
             receive[i++] = ch;
+        } else {
+            // Line too long — set overflow, discard rest
+            receive_overflow = 1;
         }
     }
 
-    // Timeout: flush partial buffer
+    // Timeout: flush partial buffer (also check overflow)
     if (uart0_int_status == 0x40) {
+        if (receive_overflow) {
+            receive_overflow = 0;
+            i = 0;
+            memset(receive, 0, sizeof(receive));
+            UARTStringPut((uint8_t *)"ERROR LINE TOO LONG\r\n");
+            return;
+        }
         if (i > 0) {
             receive[i] = '\0';
             i = 0;

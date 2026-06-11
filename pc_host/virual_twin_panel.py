@@ -228,6 +228,7 @@ class VirtualTwinPanel(QMainWindow):
         self._alarm_ringing = False
         self._alarm_enabled = False
         self._alarm_time = "06:00:00"
+        self._disp_mode_idx = 0   # 0=TIME, 1=DATE_SHORT, 2=DATE_LONG
 
         self.init_ui()
 
@@ -661,17 +662,25 @@ class VirtualTwinPanel(QMainWindow):
         disp_row.addStretch()
         layout.addLayout(disp_row)
 
-        # 显示模式
+        # 显示模式 — 3 toggle buttons (MCU DISP is cyclic, PC tracks state)
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("显示模式:"))
-        self.combo_disp_mode = QComboBox()
-        self.combo_disp_mode.addItem("HH.MM.SS — 时间", "DISP")
-        self.combo_disp_mode.addItem("YY.MM.DD — 短日期", "DISP")
-        self.combo_disp_mode.addItem("YYYY.MMDD — 长日期", "DISP")
-        # DISP 键是循环切换，PC 无法直接指定模式
-        # 改为通过多次 *SET:KEY DISP 来切换
-        self.combo_disp_mode.currentIndexChanged.connect(self._on_disp_mode_change)
-        mode_row.addWidget(self.combo_disp_mode)
+        self.btn_mode_time = QPushButton("HH.MM.SS 时间"); self.btn_mode_time.setCheckable(True); self.btn_mode_time.setChecked(True)
+        self.btn_mode_date_s = QPushButton("YY.MM.DD 短日期"); self.btn_mode_date_s.setCheckable(True)
+        self.btn_mode_date_l = QPushButton("YYYY.MMDD 长日期"); self.btn_mode_date_l.setCheckable(True)
+        self.btn_mode_time.clicked.connect(lambda: self._on_disp_mode_set(0))
+        self.btn_mode_date_s.clicked.connect(lambda: self._on_disp_mode_set(1))
+        self.btn_mode_date_l.clicked.connect(lambda: self._on_disp_mode_set(2))
+        self._disp_btns = [self.btn_mode_time, self.btn_mode_date_s, self.btn_mode_date_l]
+        for b in self._disp_btns:
+            b.setStyleSheet(
+                "QPushButton { background-color: #4a4a4a; border: 2px solid #666;"
+                "border-radius: 4px; padding: 6px 12px; color: white; }"
+                "QPushButton:checked { background-color: #0078d7; border-color: #0078d7; }"
+            )
+        mode_row.addWidget(self.btn_mode_time)
+        mode_row.addWidget(self.btn_mode_date_s)
+        mode_row.addWidget(self.btn_mode_date_l)
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
@@ -913,7 +922,9 @@ class VirtualTwinPanel(QMainWindow):
                     self.connect_btn.setText("断开")
                     self._set_connection_status(True, port)
                     self.log(f"连接成功: {port} @ {baud}", "success")
-                    # 连接后立即查询状态
+                    # 连接后立即查询状态，重置模式追踪
+                    self._disp_mode_idx = 0
+                    self._update_disp_btns(0)
                     QTimer.singleShot(500, lambda: self.send_cmd("*GET:ALARM"))
                     QTimer.singleShot(700, lambda: self.send_cmd("*GET:MODE"))
                 else:
@@ -992,10 +1003,25 @@ class VirtualTwinPanel(QMainWindow):
             self.cmd_input.clear()
 
     # ── Tab 3: 显示控制 ─────────────────────
-    def _on_disp_mode_change(self, idx):
-        # DISP键是循环切换的，无法直接跳转到指定模式
-        # 这里发送DISP键来切换一次
-        self.send_cmd("*SET:KEY DISP")
+    def _on_disp_mode_set(self, target):
+        """Sync to target mode by sending forward DISP keys.
+        MCU cycles TIME(0)->SHORT(1)->LONG(2)->TIME(0).
+        Calculate forward distance and send that many DISP keys."""
+        # Always keep the button checked (prevent unchecked on re-click)
+        self._update_disp_btns(target)
+        steps = (target - self._disp_mode_idx + 3) % 3
+        self._disp_mode_idx = target
+        if steps == 0:
+            return  # already at target
+        self.log(f"显示模式: 发送 {steps} 次 DISP 键")
+        # Send multiple DISP keys with 120ms delay between each
+        for i in range(steps):
+            QTimer.singleShot(i * 120, lambda: self.send_cmd("*SET:KEY DISP"))
+
+    def _update_disp_btns(self, cur):
+        """Update button checked states for display mode."""
+        for i, btn in enumerate(self._disp_btns):
+            btn.setChecked(i == cur)
 
     # ── Tab 4: 消息 ─────────────────────────
     def _on_msg_text_changed(self, text):
@@ -1024,6 +1050,8 @@ class VirtualTwinPanel(QMainWindow):
         )
         if reply == QMessageBox.Yes:
             self.send_cmd("*RST")
+            self._disp_mode_idx = 0
+            self._update_disp_btns(0)
 
     def _on_demo_sequence(self):
         """执行演示序列"""

@@ -2,7 +2,7 @@ Dependencies for Project 'S800', Target 'Target 1': (DO NOT MODIFY !)
 F (.\exp.c)(0x6A26A40E)(--c99 --gnu -c --cpu Cortex-M4.fp -g -O0 --apcs=interwork --split_sections-I.\RTE\_Target_1-IC:\Keil_v5\ARM\PACK\ARM\CMSIS\5.4.0\CMSIS\Core\Include-IC:\Keil_v5\ARM\PACK\Keil\TM4C_DFP\1.1.0\Device\Include\TM4C129-D__UVISION_VERSION="527" -D_RTE_ -DTM4C1294NCPDT-o .\objects\exp.o --omf_browse .\objects\exp.crf --depend .\objects\exp.d)
 I (C:\Keil_v5\ARM\ARMCC\include\stdint.h)(0x599ECD2E)
 I (C:\Keil_v5\ARM\ARMCC\include\stdbool.h)(0x599ECD2E)
-F (.\main.c)(0x6A2A766A)(--c99 --gnu -c --cpu Cortex-M4.fp -g -O0 --apcs=interwork --split_sections -I .\inc -I .\driverlib-I.\RTE\_Target_1-IC:\Keil_v5\ARM\PACK\ARM\CMSIS\5.4.0\CMSIS\Core\Include-IC:\Keil_v5\ARM\PACK\Keil\TM4C_DFP\1.1.0\Device\Include\TM4C129-D__UVISION_VERSION="527" -D_RTE_ -DTM4C1294NCPDT -DPART_TM4C1294NCPDT-o .\objects\main.o --omf_browse .\objects\main.crf --depend .\objects\main.d)
+F (.\main.c)(0x6A2A9CA1)(--c99 --gnu -c --cpu Cortex-M4.fp -g -O0 --apcs=interwork --split_sections -I .\inc -I .\driverlib-I.\RTE\_Target_1-IC:\Keil_v5\ARM\PACK\ARM\CMSIS\5.4.0\CMSIS\Core\Include-IC:\Keil_v5\ARM\PACK\Keil\TM4C_DFP\1.1.0\Device\Include\TM4C129-D__UVISION_VERSION="527" -D_RTE_ -DTM4C1294NCPDT -DPART_TM4C1294NCPDT-o .\objects\main.o --omf_browse .\objects\main.crf --depend .\objects\main.d)
 I (C:\Keil_v5\ARM\ARMCC\include\stdint.h)(0x599ECD2E)
 I (C:\Keil_v5\ARM\ARMCC\include\stdbool.h)(0x599ECD2E)
 I (C:\Keil_v5\ARM\ARMCC\include\string.h)(0x599ECD2C)
@@ -15,7 +15,7 @@ I (.\driverlib\gpio.h)(0x58BE96DC)
 I (.\inc\hw_i2c.h)(0x58BE96E8)
 I (.\inc\hw_types.h)(0x58BE96E8)
 I (.\driverlib\i2c.h)(0x58BE96DC)
-I (.\driverlib\timer.h)(0x58BE96DC)
+I (.\driverlib\pwm.h)(0x58DA55F4)
 I (.\driverlib\pin_map.h)(0x58BE96DC)
 I (.\driverlib\sysctl.h)(0x58BE96DC)
 I (.\driverlib\systick.h)(0x58BE96DC)

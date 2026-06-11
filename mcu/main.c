@@ -218,6 +218,13 @@ static uint8_t   led_heartbeat_timer = 0;  // 100ms ticks for heartbeat toggle
 static uint8_t   uart_tx_timer = 0;        // TX LED blink duration
 static uint8_t   uart_rx_timer = 0;        // RX LED blink duration
 
+/************************** Weather / NTP state (E1/E2 extensions) **************************/
+static int8_t   weather_temp = -99;        // temperature in Celsius (-99 = no data)
+static uint8_t  weather_code = 0;          // 0=none, 1=SUN, 2=CLD, 3=OVC, 4=RAI, 5=SNO, 6=FOG
+static uint8_t  weather_age = 0;           // seconds since last update (255=stale)
+static uint8_t  ntp_synced = 0;            // 0=unsynced, 1=synced, 2=drift>24h
+static uint32_t ntp_last_sync = 0;         // uptime_seconds at last sync
+
 /************************** Key state **************************/
 static uint16_t key_debounce[10] = {0};    // debounce counter per key
 static uint16_t key_hold_time[10] = {0};   // hold duration in 10ms ticks per key
@@ -363,7 +370,24 @@ void led_update(void) {
             out |= LED_EDIT;
         else
             out &= ~LED_EDIT;
+
+        // Weather LEDs (LED4-6) per spec §11/§15
+        if (weather_code == 1 && weather_temp != -99)   // SUN
+            out |= LED_NTP;           // LED4=SUN (reuse NTP bit, see mapping)
+        else if (weather_code >= 4 && weather_temp != -99) // RAI/SNO
+            out |= LED_RESERVED1;     // LED5=RAI/SNO
+        else
+            out &= ~(LED_NTP | LED_RESERVED1);
+
+        if (weather_temp >= 30)                       // >=30°C
+            out |= LED_RESERVED2;    // LED6=high temp
+        else
+            out &= ~LED_RESERVED2;
     }
+
+    // NTP LED7: SYNCED=steady on; DRIFT=1Hz toggle (handled in main loop)
+    if (ntp_synced == 1)
+        out |= (0x80);
 
     led_byte = out;
 
@@ -1000,12 +1024,25 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
             }
             break;
 
-        case 8: // USER1 — request PC time sync
-            // Send event, PC should respond with *SET:TIME
+        case 8: // USER1 — NTP sync (PC handles via *EVT:KEY USER1)
             send_response("*EVT:KEY USER1\r\n");
             break;
 
-        case 9: // USER2 — show weather if available (handled by PC)
+        case 9: // USER2 — short weather display
+            if (weather_temp != -99) {
+                // Show temperature + weather on 7-seg for 5 seconds
+                char wbuf[33];
+                const char *wname[] = {"---", "SUN", "CLD", "OVC", "RAI", "SNO", "FOG"};
+                const char *wn = (weather_code <= 6) ? wname[weather_code] : "---";
+                if (weather_temp >= 0)
+                    sprintf(wbuf, "%2d C %s", weather_temp, wn);
+                else
+                    sprintf(wbuf, "%3dC %s", weather_temp, wn);
+                cmd_set_msg(wbuf);
+            } else {
+                // No weather data
+                cmd_set_msg("-- C ---");
+            }
             send_response("*EVT:KEY USER2\r\n");
             break;
     }
@@ -1669,6 +1706,33 @@ void cmd_get(const char *params) {
     send_response("ERROR SYNTAX\r\n");
 }
 
+// *SET:WEA <temp> <COND>  — weather data from PC (spec §15)
+// temp: -40..+50, COND: SUN/CLD/OVC/RAI/SNO/FOG
+void cmd_set_wea(const char *params) {
+    const char *p = params;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0') { send_response("ERROR PARAM\r\n"); return; }
+    int t = atoi(p);
+    if (t < -40 || t > 50) { send_response("ERROR RANGE\r\n"); return; }
+    weather_temp = (int8_t)t;
+    while (*p && *p != ' ') p++;
+    while (*p == ' ' || *p == '\t') p++;
+    char buf[8];
+    strncpy(buf, p, 4);
+    buf[4] = '\0';
+    char *s = buf;
+    while (*s) { *s = toupper((unsigned char)*s); s++; }
+    if (match_abbrev(buf, "SUN"))      weather_code = 1;
+    else if (match_abbrev(buf, "CLD")) weather_code = 2;
+    else if (match_abbrev(buf, "OVC")) weather_code = 3;
+    else if (match_abbrev(buf, "RAI")) weather_code = 4;
+    else if (match_abbrev(buf, "SNO")) weather_code = 5;
+    else if (match_abbrev(buf, "FOG")) weather_code = 6;
+    else { send_response("ERROR PARAM\r\n"); return; }
+    weather_age = 0;
+    send_response("OK\r\n");
+}
+
 // *PING
 void cmd_ping(void) {
     char resp[32];
@@ -1774,6 +1838,8 @@ void process_uart_command(void) {
         cmd_set_mode(params);
     } else if (MATCH_CMD(tok, "*SET:ALARM", 9)) {
         cmd_set_alarm(params);
+    } else if (MATCH_CMD(tok, "*SET:WEA", 7)) {
+        cmd_set_wea(params);
     } else if (strncmp(tok, "*GET", 4) == 0 &&
                (int)strlen(tok) <= 12) {
         const char *sub = params;
@@ -1944,6 +2010,15 @@ int main(void) {
                 // 1Hz heartbeat: send *EVT:DISP + *EVT:LED
                 send_event_disp();
                 send_event_led();
+
+                // Weather age: max 255 seconds before stale
+                if (weather_temp != -99 && weather_age < 255)
+                    weather_age++;
+
+                // NTP drift check: >24h since last sync → DRIFT
+                if (ntp_synced == 1 &&
+                    uptime_seconds - ntp_last_sync > 86400)
+                    ntp_synced = 2;
             }
 
             // Alarm state machine

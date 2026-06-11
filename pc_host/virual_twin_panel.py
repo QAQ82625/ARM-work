@@ -6,11 +6,16 @@
 """
 
 import sys
+import os
+import csv
 import serial
 import serial.tools.list_ports
+from datetime import datetime
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
+from ntp_helper import fetch_ntp_commands, format_time
+from weather_helper import fetch_weather_command, fetch_weather
 
 
 # ============================================================
@@ -327,6 +332,7 @@ class VirtualTwinPanel(QMainWindow):
         self.tab_widget.addTab(self._create_tab_display(),   "🖥️ 显示控制")
         self.tab_widget.addTab(self._create_tab_message(),   "📝 滚动消息")
         self.tab_widget.addTab(self._create_tab_quick(),     "⚡ 快捷操作")
+        self.tab_widget.addTab(self._create_tab_extensions(), "🔌 扩展功能")
         main_layout.addWidget(self.tab_widget)
 
         # ── 4. 通信日志 ──
@@ -846,6 +852,100 @@ class VirtualTwinPanel(QMainWindow):
         w.setLayout(layout)
         return w
 
+    # ── Tab 6: 扩展功能 (E1-E4) ────────────
+    def _create_tab_extensions(self):
+        w = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+
+        # ── E1: NTP 对时 ──
+        ntp_group = QGroupBox("E1: NTP 网络对时")
+        ntp_layout = QVBoxLayout()
+        ntp_row = QHBoxLayout()
+        btn_ntp = QPushButton("🕐 同步时间 (NTP)")
+        btn_ntp.clicked.connect(self._on_ntp_sync)
+        ntp_row.addWidget(btn_ntp)
+        self.lbl_ntp_status = QLabel("未同步")
+        self.lbl_ntp_status.setStyleSheet("color: #888;")
+        ntp_row.addWidget(self.lbl_ntp_status)
+        ntp_row.addStretch()
+        ntp_layout.addLayout(ntp_row)
+        ntp_hint = QLabel("USER1 键自动触发，从 ntp.aliyun.com 获取标准时间。")
+        ntp_hint.setStyleSheet("color: #666; font-size: 10px;")
+        ntp_layout.addWidget(ntp_hint)
+        ntp_group.setLayout(ntp_layout)
+        layout.addWidget(ntp_group)
+
+        # ── E2: 天气 ──
+        wea_group = QGroupBox("E2: 天气获取")
+        wea_layout = QVBoxLayout()
+        wea_row = QHBoxLayout()
+        btn_wea = QPushButton("🌤 获取天气 (wttr.in)")
+        btn_wea.clicked.connect(self._on_weather_fetch)
+        wea_row.addWidget(btn_wea)
+        self.lbl_weather_status = QLabel("未获取")
+        self.lbl_weather_status.setStyleSheet("color: #888;")
+        wea_row.addWidget(self.lbl_weather_status)
+        wea_row.addStretch()
+        wea_layout.addLayout(wea_row)
+        wea_row2 = QHBoxLayout()
+        self.wea_auto_check = QCheckBox("30分钟自动刷新")
+        self.wea_auto_check.toggled.connect(self._on_weather_auto_toggle)
+        wea_row2.addWidget(self.wea_auto_check)
+        wea_row2.addStretch()
+        wea_layout.addLayout(wea_row2)
+        wea_hint = QLabel("USER2 键在MCU端短显温度+天气。wttr.in 免费API，无需Key。")
+        wea_hint.setStyleSheet("color: #666; font-size: 10px;")
+        wea_layout.addWidget(wea_hint)
+        wea_group.setLayout(wea_layout)
+        layout.addWidget(wea_group)
+
+        # ── E3: 自动昼夜 ──
+        day_group = QGroupBox("E3: 自动昼夜模式")
+        day_layout = QVBoxLayout()
+        day_row = QHBoxLayout()
+        self.day_auto_check = QCheckBox("启用自动昼夜切换")
+        self.day_auto_check.toggled.connect(self._on_auto_day_toggle)
+        day_row.addWidget(self.day_auto_check)
+        self.lbl_day_status = QLabel("日出/日落: --")
+        self.lbl_day_status.setStyleSheet("color: #888;")
+        day_row.addWidget(self.lbl_day_status)
+        day_row.addStretch()
+        day_layout.addLayout(day_row)
+        btn_day_now = QPushButton("☀️ 立即日间")
+        btn_day_now.clicked.connect(lambda: self.send_cmd("*SET:MODE DAY"))
+        day_layout2 = QHBoxLayout()
+        day_layout2.addWidget(btn_day_now)
+        btn_night_now = QPushButton("🌙 立即夜间")
+        btn_night_now.clicked.connect(lambda: self.send_cmd("*SET:MODE NIGHT"))
+        day_layout2.addWidget(btn_night_now)
+        day_layout2.addStretch()
+        day_layout.addLayout(day_layout2)
+        day_group.setLayout(day_layout)
+        layout.addWidget(day_group)
+
+        # ── E4: 可视化 ──
+        viz_group = QGroupBox("E4: 数据可视化")
+        viz_row = QHBoxLayout()
+        btn_viz = QPushButton("📊 查看图表")
+        btn_viz.clicked.connect(self._on_show_charts)
+        viz_row.addWidget(btn_viz)
+        self.chart_type = QComboBox()
+        self.chart_type.addItem("闹钟触发分布")
+        self.chart_type.addItem("每日事件计数")
+        self.chart_type.addItem("NTP 同步记录")
+        viz_row.addWidget(self.chart_type)
+        viz_row.addStretch()
+        viz_group.setLayout(viz_row)
+        layout.addWidget(viz_group)
+
+        # CSV log file
+        self.csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "events.csv")
+
+        layout.addStretch()
+        w.setLayout(layout)
+        return w
+
     # ── 日志区域 ────────────────────────────
     def _create_log_group(self):
         group = QGroupBox("通信日志")
@@ -1095,6 +1195,172 @@ class VirtualTwinPanel(QMainWindow):
             QTimer.singleShot(150, lambda b=btn: b.setStyleSheet(""))
 
     # ================================================================
+    # 扩展功能处理
+    # ================================================================
+
+    def _on_ntp_sync(self):
+        """E1: NTP time sync"""
+        self.lbl_ntp_status.setText("同步中...")
+        self.lbl_ntp_status.setStyleSheet("color: #FFE66D;")
+        cmds = fetch_ntp_commands()
+        if cmds is None:
+            self.lbl_ntp_status.setText("失败 (网络?)")
+            self.lbl_ntp_status.setStyleSheet("color: #FF6B6B;")
+            self.log("NTP同步失败", "error")
+            return
+        for i, cmd in enumerate(cmds):
+            QTimer.singleShot(i * 200, lambda c=cmd: self.send_cmd(c))
+        t = fetch_ntp_time()[0]
+        ts = format_time(*t) if t else "OK"
+        self.lbl_ntp_status.setText(f"已同步: {ts}")
+        self.lbl_ntp_status.setStyleSheet("color: #95E77E;")
+        self.log(f"NTP同步: {ts}", "success")
+        self._log_csv("NTP_SYNC", ts)
+
+    def _on_weather_fetch(self):
+        """E2: Fetch weather from wttr.in"""
+        self.lbl_weather_status.setText("获取中...")
+        self.lbl_weather_status.setStyleSheet("color: #FFE66D;")
+        result = fetch_weather_command()
+        if result is None:
+            self.lbl_weather_status.setText("失败 (网络?)")
+            self.lbl_weather_status.setStyleSheet("color: #FF6B6B;")
+            self.log("天气获取失败", "error")
+            return
+        cmd, desc = result
+        self.send_cmd(cmd)
+        self.lbl_weather_status.setText(desc)
+        self.lbl_weather_status.setStyleSheet("color: #95E77E;")
+        self.log(f"天气: {desc}", "success")
+        self._log_csv("WEATHER", desc)
+
+    def _on_weather_auto_toggle(self, checked):
+        """E2: Auto-refresh weather every 30 minutes"""
+        if checked:
+            self._on_weather_fetch()
+            self._wea_timer = QTimer()
+            self._wea_timer.timeout.connect(self._on_weather_fetch)
+            self._wea_timer.start(30 * 60 * 1000)
+        else:
+            if hasattr(self, '_wea_timer') and self._wea_timer:
+                self._wea_timer.stop()
+
+    def _on_auto_day_toggle(self, checked):
+        """E3: Enable/disable auto day/night mode"""
+        if checked:
+            self._check_day_night()
+            self._day_timer = QTimer()
+            self._day_timer.timeout.connect(self._check_day_night)
+            self._day_timer.start(60000)  # Check every 60s
+            self.lbl_day_status.setStyleSheet("color: #95E77E;")
+            self.log("自动昼夜模式已启用", "info")
+        else:
+            if hasattr(self, '_day_timer') and self._day_timer:
+                self._day_timer.stop()
+            self.lbl_day_status.setText("日出/日落: --")
+            self.lbl_day_status.setStyleSheet("color: #888;")
+
+    def _check_day_night(self):
+        """E3: Check current time against sunrise/sunset and send MODE command"""
+        try:
+            from astral import LocationInfo
+            from astral.sun import sun
+            city = LocationInfo("Shanghai", "China", "Asia/Shanghai", 31.23, 121.47)
+            s = sun(city.observer, date=datetime.now())
+            sunrise = s['sunrise']
+            sunset = s['sunset']
+            now = datetime.now(sunrise.tzinfo)
+            self.lbl_day_status.setText(
+                f"日出 {sunrise.strftime('%H:%M')} 日落 {sunset.strftime('%H:%M')}")
+            if sunrise <= now < sunset:
+                if self._current_mode != "DAY":
+                    self.send_cmd("*SET:MODE DAY")
+            else:
+                if self._current_mode != "NIGHT":
+                    self.send_cmd("*SET:MODE NIGHT")
+        except Exception:
+            self.lbl_day_status.setText("计算失败")
+            self.lbl_day_status.setStyleSheet("color: #FF6B6B;")
+
+    def _on_show_charts(self):
+        """E4: Show matplotlib charts"""
+        chart = self.chart_type.currentText()
+        try:
+            import matplotlib
+            matplotlib.use('Qt5Agg')
+            import matplotlib.pyplot as plt
+            self._plot_chart(plt, chart)
+        except Exception as e:
+            QMessageBox.warning(self, "图表错误", str(e))
+
+    def _plot_chart(self, plt, chart_type):
+        """E4: Generate matplotlib chart"""
+        if not os.path.exists(self.csv_path):
+            QMessageBox.information(self, "提示", "暂无事件数据")
+            return
+        rows = []
+        with open(self.csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            rows = list(reader)
+        if not rows:
+            QMessageBox.information(self, "提示", "暂无事件数据")
+            return
+
+        plt.figure(figsize=(8, 5))
+        if chart_type == "闹钟触发分布":
+            alarms = [r for r in rows if r[0] == "ALARM" or r[0] == "ALARM_OFF"]
+            if alarms:
+                hours = []
+                for a in alarms:
+                    try:
+                        h = int(a[1].split(' ')[1].split(':')[0]) if ' ' in a[1] else 0
+                        hours.append(h)
+                    except:
+                        hours.append(0)
+                plt.hist(hours, bins=24, range=(0, 24), color='orange', edgecolor='black')
+                plt.xlabel('Hour')
+                plt.ylabel('Count')
+                plt.title('Alarm Distribution by Hour')
+            else:
+                plt.text(0.5, 0.5, 'No alarm data', ha='center')
+        elif chart_type == "每日事件计数":
+            dates = {}
+            for r in rows:
+                d = r[2][:10] if len(r) > 2 else 'unknown'
+                dates[d] = dates.get(d, 0) + 1
+            if dates:
+                d_sorted = sorted(dates.items())[-14:]
+                plt.bar([d[0][5:] for d in d_sorted], [d[1] for d in d_sorted])
+                plt.xlabel('Date')
+                plt.xticks(rotation=45)
+                plt.title('Events per Day')
+        else:  # NTP sync record
+            ntps = [r for r in rows if r[0] == "NTP_SYNC"]
+            if ntps:
+                times = [n[1] for n in ntps[-20:]]
+                plt.plot(range(len(times)), [1]*len(times), 'go-', markersize=8)
+                plt.yticks([1], ['Sync'])
+                plt.xlabel('Sync #')
+                plt.title('NTP Sync Timeline')
+            else:
+                plt.text(0.5, 0.5, 'No NTP sync data', ha='center')
+        plt.tight_layout()
+        plt.show()
+
+    def _log_csv(self, event_type, detail):
+        """E4: Log event to events.csv"""
+        try:
+            exists = os.path.exists(self.csv_path)
+            with open(self.csv_path, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                if not exists:
+                    writer.writerow(['Event', 'Detail', 'Timestamp'])
+                writer.writerow([event_type, detail, datetime.now().isoformat()])
+        except Exception:
+            pass
+
+    # ================================================================
     # 数据接收与协议解析（增强版）
     # ================================================================
     def handle_data(self, data):
@@ -1157,8 +1423,12 @@ class VirtualTwinPanel(QMainWindow):
         elif data_upper.startswith("*EVT:KEY"):
             parts = data.split()
             if len(parts) >= 2:
-                key_name = parts[1]
+                key_name = parts[1].upper()
                 self.log(f"MCU按键: {key_name}", "event")
+                if key_name == "USER1":
+                    QTimer.singleShot(100, self._on_ntp_sync)
+                elif key_name == "USER2":
+                    QTimer.singleShot(100, self._on_weather_fetch)
 
         # ── *EVT:ALARM (响铃) vs *EVT:ALARM_OFF ──
         elif data_upper.startswith("*EVT:ALARM_OFF"):
@@ -1170,6 +1440,7 @@ class VirtualTwinPanel(QMainWindow):
 
         elif data_upper.startswith("*EVT:ALARM"):
             self._alarm_ringing = True
+            self._log_csv("ALARM", "ON")
             self.leds1[1].set_state(True)
             self.lbl_alarm_status.setText("⏰ 闹钟响铃中!")
             self.lbl_alarm_status.setStyleSheet(

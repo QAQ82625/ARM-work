@@ -55,23 +55,45 @@ class SimpleSevenSegment(QWidget):
         }
 
         seg_pattern = {
-            '0': ['a', 'b', 'c', 'd', 'e', 'f'],
-            '1': ['b', 'c'],
-            '2': ['a', 'b', 'd', 'e', 'g'],
-            '3': ['a', 'b', 'c', 'd', 'g'],
-            '4': ['b', 'c', 'f', 'g'],
-            '5': ['a', 'c', 'd', 'f', 'g'],
-            '6': ['a', 'c', 'd', 'e', 'f', 'g'],
-            '7': ['a', 'b', 'c'],
-            '8': ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
-            '9': ['a', 'b', 'c', 'd', 'f', 'g'],
-            'A': ['a', 'b', 'c', 'e', 'f', 'g'],
-            'b': ['c', 'd', 'e', 'f', 'g'],
-            'C': ['a', 'd', 'e', 'f'],
-            'd': ['b', 'c', 'd', 'e', 'g'],
-            'E': ['a', 'd', 'e', 'f', 'g'],
-            'F': ['a', 'e', 'f', 'g'],
-            ' ': []
+        '0': ['a', 'b', 'c', 'd', 'e', 'f'],
+        '1': ['b', 'c'],
+        '2': ['a', 'b', 'd', 'e', 'g'],
+        '3': ['a', 'b', 'c', 'd', 'g'],
+        '4': ['b', 'c', 'f', 'g'],
+        '5': ['a', 'c', 'd', 'f', 'g'],
+        '6': ['a', 'c', 'd', 'e', 'f', 'g'],
+        '7': ['a', 'b', 'c'],
+        '8': ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+        '9': ['a', 'b', 'c', 'd', 'f', 'g'],
+        'A': ['a', 'b', 'c', 'e', 'f', 'g'],
+        'B': ['c', 'd', 'e', 'f', 'g'],
+        'C': ['a', 'd', 'e', 'f'],
+        'D': ['b', 'c', 'd', 'e', 'g'],
+        'E': ['a', 'd', 'e', 'f', 'g'],
+        'F': ['a', 'e', 'f', 'g'],
+        'G': ['a', 'c', 'd', 'e', 'f'],
+        'H': ['b', 'c', 'e', 'f', 'g'],
+        'I': ['b', 'c'],
+        'J': ['b', 'c', 'd'],
+        'K': ['b', 'c', 'e', 'f', 'g'],
+        'L': ['d', 'e', 'f'],
+        'M': ['a', 'c', 'e', 'g'],
+        'N': ['c', 'e', 'g'],
+        'O': ['c', 'd', 'e', 'g'],
+        'P': ['a', 'b', 'e', 'f', 'g'],
+        'Q': ['a', 'b', 'c', 'f', 'g'],
+        'R': ['e', 'g'],
+        'S': ['a', 'c', 'd', 'f', 'g'],
+        'T': ['d', 'e', 'f', 'g'],
+        'U': ['b', 'c', 'd', 'e', 'f'],
+        'V': ['c', 'd', 'e'],
+        'W': ['b', 'c', 'd', 'e', 'f', 'g'],
+        'X': ['b', 'c', 'e', 'f', 'g'],
+        'Y': ['b', 'c', 'd', 'f', 'g'],
+        'Z': ['a', 'b', 'd', 'e', 'g'],
+        '-': ['g'],
+        '_': ['d'],
+        ' ': []
         }
 
         pattern = seg_pattern.get(self.digit.upper(), seg_pattern['8'])
@@ -193,10 +215,6 @@ class VirtualTwinPanel(QMainWindow):
         self._alarm_ringing = False
         self._alarm_enabled = False
         self._alarm_time = "06:00:00"
-
-        # 自动心跳定时器
-        self._ping_timer = QTimer()
-        self._ping_timer.timeout.connect(self._auto_ping)
 
         self.init_ui()
 
@@ -868,7 +886,6 @@ class VirtualTwinPanel(QMainWindow):
 
     def toggle_serial(self):
         if self.serial_thread.running:
-            self._ping_timer.stop()
             self.serial_thread.disconnect()
             self.connect_btn.setText("连接")
             self._set_connection_status(False)
@@ -886,8 +903,6 @@ class VirtualTwinPanel(QMainWindow):
                     # 连接后立即查询状态
                     QTimer.singleShot(500, lambda: self.send_cmd("*GET:ALARM"))
                     QTimer.singleShot(700, lambda: self.send_cmd("*GET:MODE"))
-                    # 启动自动心跳 (1Hz)
-                    self._ping_timer.start(1000)
                 else:
                     self.log(f"连接失败: {msg}", "error")
                     QMessageBox.critical(self, "错误", msg)
@@ -955,11 +970,6 @@ class VirtualTwinPanel(QMainWindow):
 
     def _on_stop_alarm(self):
         self.send_cmd("*SET:KEY FUNC")
-
-    def _auto_ping(self):
-        """Auto PING every 1s for heartbeat detection"""
-        if self.serial_thread.running:
-            self.send_cmd("*PING")
 
     def _on_send_custom(self):
         """手动命令输入发送"""

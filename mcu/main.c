@@ -643,6 +643,7 @@ void update_display(void) {
         if (edit_mode == EDIT_DATE) {
             sprintf(str, "%04d%02d%02d", year, month, day);
             dp_buf[3] = 1;  // YYYY.MM
+            dp_buf[5] = 1;  // MM.DD
         } else if (edit_mode == EDIT_TIME) {
             sprintf(str, "%02d%02d%02d  ", hour, minute, second);
             dp_buf[1] = 1;  // HH.MM
@@ -673,19 +674,26 @@ void update_display(void) {
             case DISP_MODE_DATE_LONG:
                 sprintf(str, "%04d%02d%02d", year, month, day);
                 dp_buf[3] = 1;  // YYYY.MM
+                dp_buf[5] = 1;  // MM.DD
                 break;
         }
     }
 
-    // FORMAT RIGHT: reverse the display string.
-    // dp_buf stays the same — dots fall between the same digit pairs,
-    // just displayed in reverse order. (e.g., 12.30.45 → 54.03.21)
+    // FORMAT RIGHT: reverse display string and dp_buf together.
+    // Dots are mirrored then shifted right by 1 (spec §7: "下一位").
     if (format_direction == 1) {
         char rev[9];
+        uint8_t rev_dp[8] = {0};
         for (j = 0; j < 8; j++) {
             rev[j] = str[7 - j];
         }
+        for (j = 0; j < 7; j++) {
+            // mirror dp then shift right by 1:
+            // dp at original pos k → mirrored to pos 7-k → shifted to pos 6-k
+            rev_dp[j] = dp_buf[6 - j];
+        }
         memcpy(str, rev, 8);
+        memcpy(dp_buf, rev_dp, 8);
     }
 
     // Store ASCII chars for *EVT:DISP
@@ -695,10 +703,15 @@ void update_display(void) {
     // (local behavior per §3.5, not mirrored to PC per protocol spec)
     if (edit_mode != EDIT_NONE && edit_blink) {
         if (edit_mode == EDIT_DATE) {
-            uint8_t start = (edit_field == EDIT_FIELD_YEAR) ? 0 :
-                            (edit_field == EDIT_FIELD_MONTH) ? 2 : 4;
-            uint8_t count = (edit_field == EDIT_FIELD_YEAR) ? 2 :
-                            (edit_field == EDIT_FIELD_MONTH) ? 2 : 2;
+            // Edit DATE always shows YYYY.MMDD — year takes 4 digits
+            uint8_t start, count;
+            if (edit_field == EDIT_FIELD_YEAR) {
+                start = 0; count = 4;
+            } else if (edit_field == EDIT_FIELD_MONTH) {
+                start = 4; count = 2;
+            } else {
+                start = 6; count = 2;
+            }
             for (j = start; j < start + count && j < 8; j++) {
                 str[j] = ' ';
             }
@@ -795,8 +808,8 @@ void key_scan(void) {
     gpio_keys = GPIOPinRead(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1);
 
     // Build combined 10-bit raw state (0-7=I2C, 8=USER1, 9=USER2)
-    // Active low: 0 = pressed
-    raw_state = i2c_keys;                           // bits 0-7 from I2C
+    // Both I2C and GPIO are active-low (0=press). Invert so 1=press.
+    raw_state = ~i2c_keys;                           // bits 0-7, inverted: 1=press
     if (!(gpio_keys & GPIO_PIN_0)) raw_state |= (1 << 8);  // USER1
     if (!(gpio_keys & GPIO_PIN_1)) raw_state |= (1 << 9);  // USER2
 

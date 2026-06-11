@@ -10,7 +10,7 @@
 #include "hw_i2c.h"
 #include "hw_types.h"
 #include "i2c.h"
-#include "timer.h"
+#include "pwm.h"
 #include "pin_map.h"
 #include "sysctl.h"
 #include "systick.h"
@@ -98,8 +98,8 @@
 #define LED_RESERVED2           0x80    // bit 7
 
 /************************** Beeper control **************************/
-#define BEEPER_PORT             GPIO_PORTN_BASE
-#define BEEPER_PIN              GPIO_PIN_1
+// S800 uses PS1720P02 (C96061) PASSIVE piezoelectric buzzer on PK5 (M0PWM7).
+// Resonant frequency: 2kHz. Drive via PWM0 Gen3 Output7 at 2kHz / 50% duty.
 
 /************************** Key names (for protocol) **************************/
 static const char *KEY_NAMES[] = {
@@ -377,22 +377,18 @@ void led_update(void) {
 
 /************************** Beeper control **************************/
 // S800 uses PS1720P02 (C96061) PASSIVE piezoelectric buzzer.
-// Resonant frequency: 2kHz. Rated voltage: 3V.
-// Needs external 2kHz square wave — DC drive produces NO sound.
-// Timer0A ISR toggles the pin at 2kHz when beep_active=1.
+// Resonant frequency: 2kHz. Rated voltage: 3V on PK5 (M0PWM7).
+// Drive via PWM0 Gen3 Output7 at 2kHz / 50% duty.
 
-void Beeper_Timer_Init(void);
+void Beeper_PWM_Init(void);
 
 void beep_on(void) {
     if (night_mode) return;  // suppressed in night mode
-    beep_active = 1;
-    TimerEnable(TIMER0_BASE, TIMER_A);   // start 2kHz toggling via ISR
+    PWMGenEnable(PWM0_BASE, PWM_GEN_3);   // start 2kHz PWM on PK5
 }
 
 void beep_off(void) {
-    beep_active = 0;
-    TimerDisable(TIMER0_BASE, TIMER_A);  // stop ISR toggling
-    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);  // ensure pin stays LOW
+    PWMGenDisable(PWM0_BASE, PWM_GEN_3);  // stop PWM output
 }
 
 /************************** Alarm state machine **************************/
@@ -489,13 +485,13 @@ uint8_t CharToSeg7(char c) {
             case 'c': return 0x58;  // d,e,g
             case 'e': return 0x7B;  // a,b,d,e,f,g
             case 'h': return 0x74;  // c,e,f,g
-            case 'i': return 0x7B;  // a,b,d,e,f,g
+            case 'i': return 0x10;  // e
             case 'j': return 0x0E;  // b,c,d
-            case 'l': return 0x18;  // d,e
+            case 'l': return 0x38;  // d,e,f
             case 'n': return 0x54;  // c,e,g
             case 'o': return 0x5C;  // c,d,e,g
-            case 'r': return 0x44;  // c,g
-            case 'u': return 0x3C;  // c,d,e,f
+            case 'r': return 0x50;  // e,g
+            case 'u': return 0x1C;  // c,d,e
             default: return CharToSeg7(c - 'a' + 'A');
         }
     } else if (c == '.') {
@@ -1811,7 +1807,7 @@ int main(void) {
     S800_GPIO_Init();
     S800_I2C0_Init();
     S800_UART_Init();
-    Beeper_Timer_Init();  // set up 2kHz PWM for PS1720P02 passive buzzer
+    Beeper_PWM_Init();  // set up 2kHz PWM on PK5 for PS1720P02 passive buzzer
 
     IntEnable(INT_UART0);
     UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
@@ -2000,12 +1996,9 @@ void S800_GPIO_Init(void) {
 
     GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_0);    // heartbeat LED
     GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0);    // USER1 indicator
-    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_1);    // Beeper
-    GPIOPadConfigSet(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1,
+    // PN1 (beeper) is now driven by PWM0 on PK5 — see Beeper_PWM_Init()
+    GPIOPadConfigSet(GPIO_PORTN_BASE, GPIO_PIN_0,
         GPIO_STRENGTH_8MA, GPIO_PIN_TYPE_STD);
-
-    // Ensure beeper starts silent
-    GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0);
 
     GPIOPinTypeGPIOInput(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1);
     GPIOPadConfigSet(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1,
@@ -2033,31 +2026,25 @@ void S800_I2C0_Init(void) {
     (void)I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, 0xFF);  // all off (active low)
 }
 
-/************************** Beeper Timer (2kHz PWM for passive piezo buzzer) **************************/
-void Beeper_Timer_Init(void) {
-    // Configure Timer0A for 4kHz periodic interrupt.
-    // ISR toggles beeper pin → produces 2kHz square wave for PS1720P02.
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0));
-    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
-    TimerLoadSet(TIMER0_BASE, TIMER_A, ui32SysClock / 4000);  // 4kHz
-    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    IntPrioritySet(INT_TIMER0A_TM4C123, 0xC0);  // low priority, above SysTick
-    IntEnable(INT_TIMER0A_TM4C123);
-    // Do NOT enable the timer yet — beep_on() does that.
-}
+/************************** Beeper PWM Init (2kHz on PK5 via M0PWM7) **************************/
+void Beeper_PWM_Init(void) {
+    // Configure PWM0 Gen3 Output7 (PK5) at 2kHz / 50% duty for PS1720P02 passive buzzer.
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_PWM0));
 
-void TIMER0A_Handler(void) {
-    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    if (beep_active) {
-        // Toggle beeper pin → 2kHz from 4kHz ISR
-        static uint8_t phase = 0;
-        phase = !phase;
-        if (phase)
-            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
-        else
-            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
-    }
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOK);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOK));
+
+    GPIOPinConfigure(GPIO_PK5_M0PWM7);           // PK5 alternate function = M0PWM7
+    GPIOPinTypePWM(GPIO_PORTK_BASE, GPIO_PIN_5); // set PK5 as PWM pin
+
+    PWMGenConfigure(PWM0_BASE, PWM_GEN_3,
+        PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, ui32SysClock / 2000);  // 2kHz
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7,
+        PWMGenPeriodGet(PWM0_BASE, PWM_GEN_3) / 2);              // 50% duty
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);              // enable output
+    // Do NOT start the PWM generator yet — beep_on() does that.
 }
 
 uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {

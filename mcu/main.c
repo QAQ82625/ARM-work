@@ -10,6 +10,7 @@
 #include "hw_i2c.h"
 #include "hw_types.h"
 #include "i2c.h"
+#include "timer.h"
 #include "pin_map.h"
 #include "sysctl.h"
 #include "systick.h"
@@ -375,17 +376,23 @@ void led_update(void) {
 }
 
 /************************** Beeper control **************************/
-// S800 board uses an ACTIVE buzzer (built-in oscillator).
-// Just drive the pin HIGH to sound, LOW to silence — no PWM needed.
-// The alarm rhythm pattern handles the on/off cadence.
+// S800 uses PS1720P02 (C96061) PASSIVE piezoelectric buzzer.
+// Resonant frequency: 2kHz. Rated voltage: 3V.
+// Needs external 2kHz square wave — DC drive produces NO sound.
+// Timer0A ISR toggles the pin at 2kHz when beep_active=1.
+
+void Beeper_Timer_Init(void);
 
 void beep_on(void) {
     if (night_mode) return;  // suppressed in night mode
-    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
+    beep_active = 1;
+    TimerEnable(TIMER0_BASE, TIMER_A);   // start 2kHz toggling via ISR
 }
 
 void beep_off(void) {
-    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
+    beep_active = 0;
+    TimerDisable(TIMER0_BASE, TIMER_A);  // stop ISR toggling
+    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);  // ensure pin stays LOW
 }
 
 /************************** Alarm state machine **************************/
@@ -474,11 +481,24 @@ uint8_t CharToSeg7(char c) {
             case 'P': return 0x73; case 'Q': return 0x67; case 'R': return 0x50;
             case 'S': return 0x6D; case 'T': return 0x78; case 'U': return 0x3E;
             case 'V': return 0x1C; case 'W': return 0x7E; case 'X': return 0x76;
-            case 'Y': return 0x6E; case 'Z': return 0x5B;
+            case 'Y': return 0x6E; case 'Z': return 0x1F;  // a,b,c,d,e — distinct from 2 (0x5B)
             default: return 0x00;
         }
     } else if (c >= 'a' && c <= 'z') {
-        return CharToSeg7(c - 'a' + 'A');
+        // Lowercase with visually distinct patterns from uppercase
+        switch (c) {
+            case 'c': return 0x58;  // d,e,g — bottom hook vs C(0x39)=a,d,e,f
+            case 'e': return 0x5D;  // a,c,d,e,g — small e vs E(0x79)=a,d,e,f,g
+            case 'h': return 0x74;  // c,e,f,g — small h vs H(0x76)=b,c,e,f,g
+            case 'i': return 0x04;  // c — dot vs I(0x06)=b,c
+            case 'j': return 0x0C;  // c,d — small j vs J(0x0E)=b,c,d
+            case 'l': return 0x30;  // e,f — right bar vs L(0x38)=d,e,f
+            case 'n': return 0x16;  // b,c,e — small n vs N(0x54)=c,e,g
+            case 'o': return 0x1E;  // b,c,d,e — open o vs O(0x5C)=c,d,e,g
+            case 'r': return 0x44;  // c,g — flag vs R(0x50)=e,g
+            case 'u': return 0x3C;  // c,d,e,f — small u vs U(0x3E)=b,c,d,e,f
+            default: return CharToSeg7(c - 'a' + 'A');
+        }
     } else if (c == '.') {
         return DP_SEG;
     } else if (c == '-') {
@@ -1403,7 +1423,6 @@ void cmd_set_beep(const char *params) {
 
     // Non-blocking: start beep and set timer
     beep_on();
-    beep_active = 1;
     beep_timer = (uint8_t)((duration + 50) / 100);  // convert ms to 100ms ticks
     if (beep_timer < 1) beep_timer = 1;
 
@@ -1793,6 +1812,7 @@ int main(void) {
     S800_GPIO_Init();
     S800_I2C0_Init();
     S800_UART_Init();
+    Beeper_Timer_Init();  // set up 2kHz PWM for PS1720P02 passive buzzer
 
     IntEnable(INT_UART0);
     UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
@@ -2012,6 +2032,33 @@ void S800_I2C0_Init(void) {
     // PCA9557: all output (LEDs)
     (void)I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_CONFIG, 0x00);
     (void)I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, 0xFF);  // all off (active low)
+}
+
+/************************** Beeper Timer (2kHz PWM for passive piezo buzzer) **************************/
+void Beeper_Timer_Init(void) {
+    // Configure Timer0A for 4kHz periodic interrupt.
+    // ISR toggles beeper pin → produces 2kHz square wave for PS1720P02.
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0));
+    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
+    TimerLoadSet(TIMER0_BASE, TIMER_A, ui32SysClock / 4000);  // 4kHz
+    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+    IntPrioritySet(INT_TIMER0A_TM4C123, 0xC0);  // low priority, above SysTick
+    IntEnable(INT_TIMER0A_TM4C123);
+    // Do NOT enable the timer yet — beep_on() does that.
+}
+
+void TIMER0A_Handler(void) {
+    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+    if (beep_active) {
+        // Toggle beeper pin → 2kHz from 4kHz ISR
+        static uint8_t phase = 0;
+        phase = !phase;
+        if (phase)
+            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
+        else
+            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
+    }
 }
 
 uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {

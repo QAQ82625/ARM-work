@@ -11,6 +11,7 @@
 .\objects\main.o: .\inc\hw_i2c.h
 .\objects\main.o: .\inc\hw_types.h
 .\objects\main.o: .\driverlib\i2c.h
+.\objects\main.o: .\driverlib\timer.h
 .\objects\main.o: .\driverlib\pin_map.h
 .\objects\main.o: .\driverlib\sysctl.h
 .\objects\main.o: .\driverlib\systick.h

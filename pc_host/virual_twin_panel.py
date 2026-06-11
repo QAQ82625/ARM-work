@@ -90,13 +90,26 @@ class SimpleSevenSegment(QWidget):
         'W': ['b', 'c', 'd', 'e', 'f', 'g'],
         'X': ['b', 'c', 'e', 'f', 'g'],
         'Y': ['b', 'c', 'd', 'f', 'g'],
-        'Z': ['a', 'b', 'd', 'e', 'g'],
+        'Z': ['a', 'b', 'c', 'd', 'e'],
+        # Lowercase letters — distinct from uppercase where possible
+        'c': ['d', 'e', 'g'],
+        'e': ['a', 'c', 'd', 'e', 'g'],
+        'h': ['c', 'e', 'f', 'g'],
+        'i': ['c'],
+        'j': ['c', 'd'],
+        'l': ['e', 'f'],
+        'n': ['b', 'c', 'e'],
+        'o': ['b', 'c', 'd', 'e'],
+        'r': ['c', 'g'],
+        'u': ['c', 'd', 'e', 'f'],
         '-': ['g'],
         '_': ['d'],
         ' ': []
         }
 
-        pattern = seg_pattern.get(self.digit.upper(), seg_pattern['8'])
+        # Exact match first (for lowercase), then uppercase fallback
+        ch = self.digit if self.digit in seg_pattern else self.digit.upper()
+        pattern = seg_pattern.get(ch, seg_pattern['8'])
 
         for seg_name in ['a', 'b', 'c', 'd', 'e', 'f', 'g']:
             if seg_name in pattern:

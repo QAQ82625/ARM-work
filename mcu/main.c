@@ -476,27 +476,26 @@ uint8_t CharToSeg7(char c) {
             case 'A': return 0x77; case 'B': return 0x7C; case 'C': return 0x39;
             case 'D': return 0x5E; case 'E': return 0x79; case 'F': return 0x71;
             case 'G': return 0x3D; case 'H': return 0x76; case 'I': return 0x06;
-            case 'J': return 0x0E; case 'K': return 0x76; case 'L': return 0x38;
-            case 'M': return 0x55; case 'N': return 0x54; case 'O': return 0x5C;
-            case 'P': return 0x73; case 'Q': return 0x67; case 'R': return 0x50;
+            case 'J': return 0x78; case 'K': return 0x2F; case 'L': return 0x1E;
+            case 'M': return 0x55; case 'N': return 0x76; case 'O': return 0x7E;
+            case 'P': return 0x73; case 'Q': return 0x67; case 'R': return 0x07;
             case 'S': return 0x6D; case 'T': return 0x78; case 'U': return 0x3E;
-            case 'V': return 0x1C; case 'W': return 0x7E; case 'X': return 0x76;
-            case 'Y': return 0x6E; case 'Z': return 0x1F;  // a,b,c,d,e — distinct from 2 (0x5B)
+            case 'V': return 0x3F; case 'W': return 0x2B; case 'X': return 0x36;
+            case 'Y': return 0x6E; case 'Z': return 0x49;
             default: return 0x00;
         }
     } else if (c >= 'a' && c <= 'z') {
-        // Lowercase with visually distinct patterns from uppercase
         switch (c) {
-            case 'c': return 0x58;  // d,e,g — bottom hook vs C(0x39)=a,d,e,f
-            case 'e': return 0x5D;  // a,c,d,e,g — small e vs E(0x79)=a,d,e,f,g
-            case 'h': return 0x74;  // c,e,f,g — small h vs H(0x76)=b,c,e,f,g
-            case 'i': return 0x04;  // c — dot vs I(0x06)=b,c
-            case 'j': return 0x0C;  // c,d — small j vs J(0x0E)=b,c,d
-            case 'l': return 0x30;  // e,f — right bar vs L(0x38)=d,e,f
-            case 'n': return 0x16;  // b,c,e — small n vs N(0x54)=c,e,g
-            case 'o': return 0x1E;  // b,c,d,e — open o vs O(0x5C)=c,d,e,g
-            case 'r': return 0x44;  // c,g — flag vs R(0x50)=e,g
-            case 'u': return 0x3C;  // c,d,e,f — small u vs U(0x3E)=b,c,d,e,f
+            case 'c': return 0x58;  // d,e,g
+            case 'e': return 0x6F;  // a,b,c,d,f,g
+            case 'h': return 0x74;  // c,e,f,g
+            case 'i': return 0x6F;  // a,b,c,d,f,g
+            case 'j': return 0x38;  // d,e,f
+            case 'l': return 0x0C;  // c,d
+            case 'n': return 0x15;  // a,c,e
+            case 'o': return 0x1D;  // a,c,d,e
+            case 'r': return 0x44;  // c,g
+            case 'u': return 0x3C;  // c,d,e,f
             default: return CharToSeg7(c - 'a' + 'A');
         }
     } else if (c == '.') {

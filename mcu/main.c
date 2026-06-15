@@ -435,7 +435,9 @@ void beep_on(void) {
 }
 
 void beep_off(void) {
-    PWMGenDisable(PWM0_BASE, PWM_GEN_3);  // stop PWM output
+    PWMGenDisable(PWM0_BASE, PWM_GEN_3);
+    beep_active = 0;     // kill any pending *SET:BEEP timer
+    beep_timer = 0;
 }
 
 /************************** Alarm state machine **************************/
@@ -858,13 +860,10 @@ void send_event_mode(const char *state) {
 /************************** Key scanning **************************/
 void key_scan(void) {
     uint8_t i2c_keys, gpio_keys;
-    uint8_t raw_state;
+    uint16_t raw_state;
     int i;
 
     // Read I2C keys from TCA6424 Port0 (8 keys, active low)
-    // Disable SysTick AND wait for any in-progress ISR I2C transaction
-    // to complete before starting our own. Otherwise the bus state
-    // machine gets corrupted, causing phantom key reads.
     SysTickIntDisable();
     while (I2CMasterBusy(I2C0_BASE)) {};  // drain ISR's in-flight transaction
     i2c_keys = I2C0_ReadByte(TCA6424_I2CADDR, TCA6424_INPUT_PORT0);
@@ -875,9 +874,9 @@ void key_scan(void) {
 
     // Build combined 10-bit raw state (0-7=I2C, 8=USER1, 9=USER2)
     // Both I2C and GPIO are active-low (0=press). Invert so 1=press.
-    raw_state = ~i2c_keys;                           // bits 0-7, inverted: 1=press
-    if (!(gpio_keys & GPIO_PIN_0)) raw_state |= (1 << 8);  // USER1
-    if (!(gpio_keys & GPIO_PIN_1)) raw_state |= (1 << 9);  // USER2
+    raw_state = (uint16_t)(~i2c_keys) & 0xFF;         // bits 0-7, inverted: 1=press
+    if (!(gpio_keys & GPIO_PIN_0)) raw_state |= (1U << 8);  // USER1
+    if (!(gpio_keys & GPIO_PIN_1)) raw_state |= (1U << 9);  // USER2
 
     // If in alarm ringing, check FUNC (key index 1) for quick stop
     if (alarm_ringing) {
@@ -1132,9 +1131,14 @@ void edit_exit(uint8_t save) {
 }
 
 void edit_tick(void) {
-    // No auto-exit timeout. Only FUNC-long or SAVE exits edit mode.
-    // Blink is handled in the 100ms loop via edit_blink_timer.
-    (void)edit_timeout;  // unused, kept for backward struct compat
+    if (edit_mode == EDIT_NONE) return;
+
+    // 5-second timeout: auto-exit without save
+    edit_timeout++;
+    if (edit_timeout >= 500) {  // 500 * 10ms = 5s
+        edit_exit(0);  // cancel
+    }
+    // Blink is handled in the 100ms loop via edit_blink_timer
 }
 
 /************************** Command handlers **************************/

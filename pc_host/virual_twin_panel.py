@@ -236,6 +236,14 @@ class VirtualTwinPanel(QMainWindow):
         self._disp_mode_idx = 0   # 0=TIME, 1=DATE_SHORT, 2=DATE_LONG
         self._edit_mode = 0       # 0=none, 1=date, 2=time, 3=alarm
         self._edit_field = 0      # current edit field index
+        self._weather_temp = -99  # cached weather data for PC mirror display
+        self._weather_cond = "---"
+        self._weather_desc = ""
+
+        # Alarm LED blink timer
+        self._alarm_blink = QTimer()
+        self._alarm_blink.timeout.connect(self._blink_alarm_led)
+        self._alarm_blink_on = False
 
         self.init_ui()
 
@@ -1263,10 +1271,18 @@ class VirtualTwinPanel(QMainWindow):
             return
         cmd, desc = result
         self.send_cmd(cmd)
+        # Cache weather for PC mirror
+        w = fetch_weather()
+        if w:
+            self._weather_temp, self._weather_cond, self._weather_desc = w
+        else:
+            self._weather_desc = desc
         self.lbl_weather_status.setText(desc)
         self.lbl_weather_status.setStyleSheet("color: #95E77E;")
         self.log(f"天气: {desc}", "success")
         self._log_csv("WEATHER", desc)
+        # Show weather on PC SEG for 3 seconds
+        self._show_weather_on_seg()
 
     def _on_weather_auto_toggle(self, checked):
         """E2: Auto-refresh weather every 30 minutes"""
@@ -1478,6 +1494,7 @@ class VirtualTwinPanel(QMainWindow):
         # ── *EVT:ALARM (响铃) vs *EVT:ALARM_OFF ──
         elif data_upper.startswith("*EVT:ALARM_OFF"):
             self._alarm_ringing = False
+            self._alarm_blink.stop()
             self.leds1[1].set_state(False)
             self.lbl_alarm_status.setText("闹钟已停止")
             self.lbl_alarm_status.setStyleSheet("color: #888; font-size: 14px;")
@@ -1485,8 +1502,8 @@ class VirtualTwinPanel(QMainWindow):
 
         elif data_upper.startswith("*EVT:ALARM"):
             self._alarm_ringing = True
+            self._alarm_blink.start(250)  # blink LED1 at 4Hz
             self._log_csv("ALARM", "ON")
-            self.leds1[1].set_state(True)
             self.lbl_alarm_status.setText("⏰ 闹钟响铃中!")
             self.lbl_alarm_status.setStyleSheet(
                 "color: #FF6B6B; font-size: 14px; font-weight: bold;"
@@ -1621,6 +1638,21 @@ class VirtualTwinPanel(QMainWindow):
         else:
             self.lbl_alarm_status.setStyleSheet("color: #888; font-size: 14px;")
         QTimer.singleShot(300, lambda: self._flash_alarm(count - 1))
+
+    def _show_weather_on_seg(self):
+        """Show weather data on PC SEG display for 3 seconds"""
+        if self._weather_temp == -99:
+            return
+        t_str = f"{self._weather_temp}C"
+        cond_str = self._weather_cond[:3]
+        full = (t_str + " " + cond_str).ljust(8, ' ')[:8]
+        for i, ch in enumerate(full):
+            self.segments[i].set_digit(ch, False)
+
+    def _blink_alarm_led(self):
+        """Blink alarm LED during ringing"""
+        self._alarm_blink_on = not self._alarm_blink_on
+        self.leds1[1].set_state(self._alarm_blink_on)
 
     def _update_alarm_ui(self):
         """Update alarm tab UI based on current alarm state"""

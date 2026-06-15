@@ -430,13 +430,16 @@ void led_update(void) {
 void Beeper_PWM_Init(void);
 
 void beep_on(void) {
-    if (night_mode) return;  // suppressed in night mode
-    PWMGenEnable(PWM0_BASE, PWM_GEN_3);   // start 2kHz PWM on PK5
+    if (night_mode) return;
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7,
+        PWMGenPeriodGet(PWM0_BASE, PWM_GEN_3) / 2);
+    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
 void beep_off(void) {
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 0);
     PWMGenDisable(PWM0_BASE, PWM_GEN_3);
-    beep_active = 0;     // kill any pending *SET:BEEP timer
+    beep_active = 0;
     beep_timer = 0;
 }
 

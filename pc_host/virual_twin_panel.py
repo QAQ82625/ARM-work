@@ -234,6 +234,8 @@ class VirtualTwinPanel(QMainWindow):
         self._alarm_enabled = False
         self._alarm_time = "06:00:00"
         self._disp_mode_idx = 0   # 0=TIME, 1=DATE_SHORT, 2=DATE_LONG
+        self._edit_mode = 0       # 0=none, 1=date, 2=time, 3=alarm
+        self._edit_field = 0      # current edit field index
 
         self.init_ui()
 
@@ -583,69 +585,62 @@ class VirtualTwinPanel(QMainWindow):
         w.setLayout(layout)
         return w
 
-    # ── Tab 2: 闹钟管理 ─────────────────────
+    # ── Tab 2: 多闹钟调度器 (§4.3) ────────
     def _create_tab_alarm(self):
         w = QWidget()
         layout = QVBoxLayout()
-        layout.setSpacing(12)
+        layout.setSpacing(8)
 
-        # 闹钟时间设置行
-        alm_row = QHBoxLayout()
-        alm_row.addWidget(QLabel("闹钟时间:"))
-        self.sp_alarm_h = QSpinBox()
-        self.sp_alarm_h.setRange(0, 23); self.sp_alarm_h.setValue(6)
-        self.sp_alarm_h.setPrefix("时 "); self.sp_alarm_h.setSuffix("  ")
-        alm_row.addWidget(self.sp_alarm_h)
-        self.sp_alarm_m = QSpinBox()
-        self.sp_alarm_m.setRange(0, 59); self.sp_alarm_m.setValue(0)
-        self.sp_alarm_m.setPrefix("分 "); self.sp_alarm_m.setSuffix("  ")
-        alm_row.addWidget(self.sp_alarm_m)
-        self.sp_alarm_s = QSpinBox()
-        self.sp_alarm_s.setRange(0, 59); self.sp_alarm_s.setValue(0)
-        self.sp_alarm_s.setPrefix("秒 ")
-        alm_row.addWidget(self.sp_alarm_s)
-        alm_row.addStretch()
-        btn_set_alarm = QPushButton("设置闹钟")
-        btn_set_alarm.clicked.connect(self._on_set_alarm)
-        alm_row.addWidget(btn_set_alarm)
-        layout.addLayout(alm_row)
+        # 7-row grid: Mon-Sun
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        days = ["周一 Mon", "周二 Tue", "周三 Wed", "周四 Thu", "周五 Fri", "周六 Sat", "周日 Sun"]
+        self.alarm_spins = []  # [(h_spin, m_spin, s_spin, enabled_cb)]
+        for i, label in enumerate(days):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            row.addSpacing(10)
+            hs = QSpinBox(); hs.setRange(0, 23); hs.setValue(6); hs.setPrefix("时"); hs.setMaximumWidth(70)
+            ms = QSpinBox(); ms.setRange(0, 59); ms.setValue(0); ms.setPrefix("分"); ms.setMaximumWidth(70)
+            ss = QSpinBox(); ss.setRange(0, 59); ss.setValue(0); ss.setPrefix("秒"); ss.setMaximumWidth(70)
+            cb = QCheckBox("启用"); cb.setChecked(i < 5)
+            row.addWidget(hs); row.addWidget(ms); row.addWidget(ss); row.addWidget(cb)
+            row.addStretch()
+            layout.addLayout(row)
+            self.alarm_spins.append((hs, ms, ss, cb))
 
-        # 闹钟使能/禁用行
-        toggle_row = QHBoxLayout()
-        self.btn_alarm_toggle = QPushButton("启用闹钟 ✓")
-        self.btn_alarm_toggle.setStyleSheet(
-            "background-color: #006400; color: white; font-weight: bold;"
-        )
-        self.btn_alarm_toggle.clicked.connect(self._on_toggle_alarm)
-        toggle_row.addWidget(self.btn_alarm_toggle)
-        btn_read_alarm = QPushButton("读取闹钟")
-        btn_read_alarm.clicked.connect(lambda: self.send_cmd("*GET:ALARM"))
-        toggle_row.addWidget(btn_read_alarm)
-        toggle_row.addStretch()
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_apply = QPushButton("应用全部")
+        btn_apply.clicked.connect(self._on_alarm_apply_all)
+        btn_row.addWidget(btn_apply)
+        btn_copy = QPushButton("复制到工作日")
+        btn_copy.clicked.connect(self._on_alarm_copy_workdays)
+        btn_row.addWidget(btn_copy)
+        btn_clear = QPushButton("清除全部")
+        btn_clear.clicked.connect(self._on_alarm_clear_all)
+        btn_row.addWidget(btn_clear)
+        btn_read = QPushButton("从MCU读取")
+        btn_read.clicked.connect(lambda: self.send_cmd("*GET:ALARM"))
+        btn_row.addWidget(btn_read)
         btn_stop = QPushButton("停止闹钟")
         btn_stop.setStyleSheet("background-color: #8B0000;")
         btn_stop.clicked.connect(self._on_stop_alarm)
-        toggle_row.addWidget(btn_stop)
-        layout.addLayout(toggle_row)
+        btn_row.addWidget(btn_stop)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
 
-        # 闹钟状态
-        status_row = QHBoxLayout()
-        self.lbl_alarm_status = QLabel("闹钟状态: 等待读取...")
-        self.lbl_alarm_status.setStyleSheet("color: #888; font-size: 14px;")
-        status_row.addWidget(self.lbl_alarm_status)
-        status_row.addStretch()
-        layout.addLayout(status_row)
+        self.lbl_alarm_status = QLabel("")
+        self.lbl_alarm_status.setStyleSheet("color: #888; font-size: 13px;")
+        layout.addWidget(self.lbl_alarm_status)
 
-        # 说明
         hint = QLabel(
-            "提示: *SET:ALARM 直接设置闹钟时间并自动启用。\n"
-            "按 EXT 键可切换闹钟启用/禁用。\n"
-            "闹钟匹配 HH:MM:SS 时触发，持续10秒自动停止，可按 FUNC 中途停止。"
+            "§4.3 多闹钟调度器: 每天可独立设置闹钟时间。\n"
+            "MCU按 EXT 可切换当天闹钟使能。响铃按 FUNC 停止。"
         )
-        hint.setStyleSheet("color: #666; font-size: 11px;")
+        hint.setStyleSheet("color: #666; font-size: 10px;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
-
         layout.addStretch()
         w.setLayout(layout)
         return w
@@ -1077,6 +1072,37 @@ class VirtualTwinPanel(QMainWindow):
         self.log("已填入电脑当前时间", "info")
 
     # ── Tab 2: 闹钟 ─────────────────────────
+    # ── Tab 2: 多闹钟 ───────────────────────
+    def _on_alarm_apply_all(self):
+        """Send all 7 alarm slots to MCU"""
+        days = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+        for i, (day, (hs, ms, ss, cb)) in enumerate(zip(days, self.alarm_spins)):
+            cmd = f"*SET:ALARM {day} HOUR {hs.value()} MIN {ms.value()} SEC {ss.value()}"
+            delay = i * 150
+            QTimer.singleShot(delay, lambda c=cmd: self.send_cmd(c))
+            enabled_cmd = f"*SET:ALARM {day} {'ON' if cb.isChecked() else 'OFF'}"
+            QTimer.singleShot(delay + 80, lambda c=enabled_cmd: self.send_cmd(c))
+        self.lbl_alarm_status.setText("已全部应用")
+        self.lbl_alarm_status.setStyleSheet("color: #95E77E; font-size: 13px;")
+        self._log_csv("ALARM_SET", "ALL_7_SLOTS")
+
+    def _on_alarm_copy_workdays(self):
+        """Copy row 0 (Monday) values to Mon-Fri"""
+        h0, m0, s0, c0 = self.alarm_spins[0]
+        for i in range(5):
+            hs, ms, ss, cb = self.alarm_spins[i]
+            hs.setValue(h0.value()); ms.setValue(m0.value()); ss.setValue(s0.value())
+            cb.setChecked(True)
+        self.lbl_alarm_status.setText("已复制到周一至周五")
+
+    def _on_alarm_clear_all(self):
+        """Disable all alarms"""
+        days = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+        for i, day in enumerate(days):
+            QTimer.singleShot(i * 80, lambda d=day: self.send_cmd(f"*SET:ALARM {d} OFF"))
+        self.lbl_alarm_status.setText("已全部禁用")
+        self._update_alarm_ui()
+
     def _on_set_alarm(self):
         h = self.sp_alarm_h.value()
         m = self.sp_alarm_m.value()
@@ -1385,8 +1411,11 @@ class VirtualTwinPanel(QMainWindow):
                     dp_val = 0
                 for i in range(8):
                     dp_on = bool(dp_val & (1 << (7 - i)))
-                    ch = disp[i] if disp[i] != '_' else ' '
-                    self.segments[i].set_digit(ch, dp_on)
+                    # P4: night mode — only show positions 0-3 (HH.MM)
+                    ch_raw = disp[i] if disp[i] != '_' else ' '
+                    if self._current_mode == "NIGHT" and i >= 4:
+                        ch_raw = ' '
+                    self.segments[i].set_digit(ch_raw, dp_on)
                 # 更新 MCU 时间显示
                 try:
                     h, m, s = int(disp[0:2]), int(disp[2:4]), int(disp[4:6])
@@ -1425,6 +1454,14 @@ class VirtualTwinPanel(QMainWindow):
             if len(parts) >= 2:
                 key_name = parts[1].upper()
                 self.log(f"MCU按键: {key_name}", "event")
+                # Track edit mode state on PC for edit highlight mirror
+                if key_name == "FUNC":
+                    self._edit_mode = (self._edit_mode + 1) % 4 if self._edit_mode < 3 else 0
+                    self._edit_field = 0
+                elif key_name == "SHIFT":
+                    self._edit_field = (self._edit_field + 1) % 3
+                elif key_name in ("SAVE",):
+                    self._edit_mode = 0; self._edit_field = 0
                 if key_name == "USER1":
                     QTimer.singleShot(100, self._on_ntp_sync)
                 elif key_name == "USER2":
@@ -1500,22 +1537,24 @@ class VirtualTwinPanel(QMainWindow):
         elif data_upper.startswith("OK"):
             parts = data.split()
             if len(parts) >= 4:
-                # Check for *GET:ALARM response: OK HH MM SS ON/OFF
-                if len(parts) >= 5 and parts[4].upper() in ("ON", "OFF"):
+                # Check for *GET:ALARM multi-slot response: OK MON HH MM SS ON TUE ...
+                if len(parts) >= 7 and parts[1].upper() in ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"):
+                    self._parse_alarm_response(parts, data_upper)
+                # Check for single-slot: OK HH MM SS ON/OFF
+                elif len(parts) >= 5 and parts[4].upper() in ("ON", "OFF"):
                     try:
-                        self.sp_alarm_h.setValue(int(parts[1]))
-                        self.sp_alarm_m.setValue(int(parts[2]))
-                        self.sp_alarm_s.setValue(int(parts[3]))
-                        self._alarm_enabled = (parts[4].upper() == "ON")
-                        self._alarm_time = f"{parts[1]}:{parts[2]}:{parts[3]}"
-                        self._update_alarm_ui()
+                        hs = self.alarm_spins[0][0]
+                        hs.setValue(int(parts[1]))
+                        self.alarm_spins[0][1].setValue(int(parts[2]))
+                        self.alarm_spins[0][2].setValue(int(parts[3]))
+                        self.alarm_spins[0][3].setChecked(parts[4].upper() == "ON")
                     except (ValueError, IndexError):
                         pass
                 # Check for *GET:MODE or *GET:DISP single-word response
                 elif parts[1].upper() in ("DAY", "NIGHT"):
                     self._set_mode_indicator(parts[1].upper())
                 elif parts[1].upper() in ("ON", "OFF"):
-                    pass  # DISP ON/OFF — handled silently
+                    pass
                 else:
                     try:
                         vals = [int(p) for p in parts[1:4]]
@@ -1543,6 +1582,25 @@ class VirtualTwinPanel(QMainWindow):
         # ── ERROR 响应 ──
         elif data_upper.startswith("ERROR"):
             self.log(f"错误: {data}", "error")
+
+    def _parse_alarm_response(self, parts, data_upper):
+        """Parse multi-slot alarm response: OK MON HH MM SS ON TUE HH MM SS ON ..."""
+        days_idx = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+        i = 1
+        while i + 4 < len(parts):
+            day = parts[i].upper()
+            if day not in days_idx: break
+            idx = days_idx[day]
+            try:
+                self.alarm_spins[idx][0].setValue(int(parts[i + 1]))
+                self.alarm_spins[idx][1].setValue(int(parts[i + 2]))
+                self.alarm_spins[idx][2].setValue(int(parts[i + 3]))
+                self.alarm_spins[idx][3].setChecked(parts[i + 4].upper() == "ON")
+            except (ValueError, IndexError):
+                pass
+            i += 5
+        self.lbl_alarm_status.setText("已从MCU读取")
+        self.lbl_alarm_status.setStyleSheet("color: #95E77E; font-size: 13px;")
 
     def _flash_alarm(self, count):
         """闹钟标签红色闪烁"""

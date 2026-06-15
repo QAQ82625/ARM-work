@@ -181,15 +181,38 @@ volatile uint8_t  hour = 12, minute = 34, second = 56;
 volatile uint16_t year = 2026;
 volatile uint8_t  month = 6, day = 8;
 
-/************************** Alarm state **************************/
-volatile uint8_t  alarm_hour = 6, alarm_minute = 0, alarm_second = 0;  // 06:00 default
-volatile uint8_t  alarm_enabled = 1;
+/************************** Day-of-week tracking **************************/
+#define DOW_MON 1
+#define DOW_TUE 2
+#define DOW_WED 3
+#define DOW_THU 4
+#define DOW_FRI 5
+#define DOW_SAT 6
+#define DOW_SUN 7
+volatile uint8_t  day_of_week = DOW_MON;       // 2026-06-08 = Monday
+static const char *DOW_NAMES[] = {"","MON","TUE","WED","THU","FRI","SAT","SUN"};
+
+/************************** Alarm state — 7 slots (Mon-Sun) **************************/
+#define ALARM_SLOTS 7
+volatile uint8_t  alarm_hour[ALARM_SLOTS];      // per-day alarm hour
+volatile uint8_t  alarm_minute[ALARM_SLOTS];    // per-day alarm minute
+volatile uint8_t  alarm_second[ALARM_SLOTS];    // per-day alarm second
+volatile uint8_t  alarm_enabled_mask;           // bit 0=Mon ... bit 6=Sun
+
+#define ALARM_IDX          (day_of_week - 1)
+#define ALARM_CUR_HOUR     alarm_hour[ALARM_IDX]
+#define ALARM_CUR_MIN      alarm_minute[ALARM_IDX]
+#define ALARM_CUR_SEC      alarm_second[ALARM_IDX]
+#define ALARM_CUR_ENABLED  (alarm_enabled_mask & (1 << ALARM_IDX))
+#define ALARM_SET_ENABLED  (alarm_enabled_mask |= (1 << ALARM_IDX))
+#define ALARM_SET_DISABLED (alarm_enabled_mask &= ~(1 << ALARM_IDX))
+
 volatile uint8_t  alarm_ringing = 0;
-static uint8_t    alarm_beep_phase = 0;    // 0=off-wait, 1=on, 2=off-wait2, 3=on
-static uint8_t    alarm_beep_timer = 0;    // 100ms ticks per phase
-static uint8_t    alarm_total_timer = 0;   // total 100ms ticks (max 100 = 10s)
-static uint8_t    alarm_snooze = 0;        // suppress flag for night mode
-static uint8_t    alarm_led_blink = 0;     // alternate-state for alarm LED fast blink
+static uint8_t    alarm_beep_phase = 0;
+static uint8_t    alarm_beep_timer = 0;
+static uint8_t    alarm_total_timer = 0;
+static uint8_t    alarm_snooze = 0;
+static uint8_t    alarm_led_blink = 0;
 
 /************************** Display state **************************/
 uint8_t  disp_mode = DISP_MODE_TIME;
@@ -359,7 +382,7 @@ void led_update(void) {
                 out |= LED_ALARM;
             else
                 out &= ~LED_ALARM;
-        } else if (alarm_enabled) {
+        } else if (ALARM_CUR_ENABLED) {
             out |= LED_ALARM;   // armed = steady on
         } else {
             out &= ~LED_ALARM;
@@ -417,13 +440,14 @@ void beep_off(void) {
 
 /************************** Alarm state machine **************************/
 void alarm_check(void) {
-    if (!alarm_enabled || alarm_snooze) return;
+    if (alarm_snooze) return;
+    if (!ALARM_CUR_ENABLED) return;
 
-    // Check if current time matches alarm time
+    // Check if current time matches today's alarm time
     if (!alarm_ringing &&
-        hour == alarm_hour &&
-        minute == alarm_minute &&
-        second == alarm_second) {
+        hour == ALARM_CUR_HOUR &&
+        minute == ALARM_CUR_MIN &&
+        second == ALARM_CUR_SEC) {
         // Start alarm
         alarm_ringing = 1;
         alarm_beep_phase = 0;
@@ -631,6 +655,9 @@ void update_time(void) {
                         year++;
                     }
                 }
+                // Advance day-of-week on midnight rollover
+                day_of_week++;
+                if (day_of_week > DOW_SUN) day_of_week = DOW_MON;
             }
         }
     }
@@ -688,7 +715,7 @@ void update_display(void) {
             dp_buf[1] = 1;  // HH.MM
             dp_buf[3] = 1;  // MM.SS
         } else if (edit_mode == EDIT_ALARM) {
-            sprintf(str, "%02d%02d%02d  ", alarm_hour, alarm_minute, alarm_second);
+            sprintf(str, "%02d%02d%02d  ", ALARM_CUR_HOUR, ALARM_CUR_MIN, ALARM_CUR_SEC);
             dp_buf[1] = 1;
             dp_buf[3] = 1;
         }
@@ -930,11 +957,11 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
                     }
                 } else if (edit_mode == EDIT_ALARM) {
                     if (edit_field == EDIT_FIELD_HOUR) {
-                        alarm_hour++; if (alarm_hour > 23) alarm_hour = 0;
+                        ALARM_CUR_HOUR++; if (ALARM_CUR_HOUR > 23) ALARM_CUR_HOUR = 0;
                     } else if (edit_field == EDIT_FIELD_MINUTE) {
-                        alarm_minute++; if (alarm_minute > 59) alarm_minute = 0;
+                        ALARM_CUR_MIN++; if (ALARM_CUR_MIN > 59) ALARM_CUR_MIN = 0;
                     } else if (edit_field == EDIT_FIELD_SECOND) {
-                        alarm_second++; if (alarm_second > 59) alarm_second = 0;
+                        ALARM_CUR_SEC++; if (ALARM_CUR_SEC > 59) ALARM_CUR_SEC = 0;
                     }
                 }
                 update_display();
@@ -998,9 +1025,13 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
             update_display();
             break;
 
-        case 7: // EXT — toggle alarm enable/disable
-            alarm_enabled = !alarm_enabled;
-            if (alarm_enabled) {
+        case 7: // EXT — toggle alarm enable/disable for current day
+            if (ALARM_CUR_ENABLED) {
+                ALARM_SET_DISABLED;
+            } else {
+                ALARM_SET_ENABLED;
+            }
+            if (ALARM_CUR_ENABLED) {
                 send_response("*EVT:ALARM:SET ON\r\n");
             } else {
                 alarm_ringing = 0;
@@ -1054,13 +1085,15 @@ static uint8_t  backup_hour, backup_minute, backup_second;
 static uint16_t backup_year;
 static uint8_t  backup_month, backup_day;
 static uint8_t  backup_alarm_hour, backup_alarm_minute, backup_alarm_second;
+static uint8_t  backup_alarm_enabled;
 
 void edit_enter(uint8_t mode) {
     // Backup current values before entering edit mode
     backup_hour = hour; backup_minute = minute; backup_second = second;
     backup_year = year; backup_month = month; backup_day = day;
-    backup_alarm_hour = alarm_hour; backup_alarm_minute = alarm_minute;
-    backup_alarm_second = alarm_second;
+    backup_alarm_hour = ALARM_CUR_HOUR; backup_alarm_minute = ALARM_CUR_MIN;
+    backup_alarm_second = ALARM_CUR_SEC;
+    backup_alarm_enabled = ALARM_CUR_ENABLED ? 1 : 0;
 
     edit_mode = mode;
     edit_field = 0;
@@ -1081,15 +1114,16 @@ void edit_exit(uint8_t save) {
             sprintf(value, "%02d.%02d.%02d", hour, minute, second);
             send_event_edit("TIME", value);
         } else if (edit_mode == EDIT_ALARM) {
-            sprintf(value, "%02d.%02d.%02d", alarm_hour, alarm_minute, alarm_second);
+            sprintf(value, "%02d.%02d.%02d", ALARM_CUR_HOUR, ALARM_CUR_MIN, ALARM_CUR_SEC);
             send_event_edit("ALARM", value);
         }
     } else if (edit_mode != EDIT_NONE) {
         // Cancel: restore original values (only if actually in edit mode)
         hour = backup_hour; minute = backup_minute; second = backup_second;
         year = backup_year; month = backup_month; day = backup_day;
-        alarm_hour = backup_alarm_hour; alarm_minute = backup_alarm_minute;
-        alarm_second = backup_alarm_second;
+        ALARM_CUR_HOUR = backup_alarm_hour; ALARM_CUR_MIN = backup_alarm_minute;
+        ALARM_CUR_SEC = backup_alarm_second;
+        if (backup_alarm_enabled) ALARM_SET_ENABLED; else ALARM_SET_DISABLED;
     }
 
     edit_mode = EDIT_NONE;
@@ -1162,7 +1196,11 @@ void cmd_rst(const char *params) {
         hour = 0; minute = 0; second = 0;
     }
     if (reset_alarm) {
-        alarm_hour = 6; alarm_minute = 0; alarm_second = 0;  // 06:00, won't match 00:00
+        int a_i;
+        for (a_i = 0; a_i < ALARM_SLOTS; a_i++) {
+            alarm_hour[a_i] = 6; alarm_minute[a_i] = 0; alarm_second[a_i] = 0;
+        }
+        alarm_enabled_mask = 0x1F;  // Mon-Fri enabled (bits 0-4)
     }
 
     format_direction = 0;   // FORMAT=LEFT
@@ -1572,71 +1610,114 @@ void cmd_set_mode(const char *params) {
     }
 }
 
-// *SET:ALARM HOUR <val> MINute <val> SECond <val> / OFF
-// Required basic command per §10 of development spec
+// *SET:ALARM [slot] HOUR <val> MINute <val> SECond <val> / OFF / ON
+// slot: MON/TUE/WED/THU/FRI/SAT/SUN/ALL (default=current day)
+// OFF disables current slot; ON enables current slot.
 void cmd_set_alarm(const char *params) {
     char buf[64], *p, *token;
     strncpy(buf, params, sizeof(buf));
     buf[sizeof(buf) - 1] = '\0';
 
     p = buf;
-    int any_set = 0;
 
-    while (*p) {
+    // Parse first token — check if it's a day-of-week slot
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0') { send_response("ERROR SYNTAX\r\n"); return; }
+    token = p;
+    while (*p && *p != ' ' && *p != '\t') p++;
+    char saved = *p; *p = '\0';
+    char *tp_up = token;
+    while (*tp_up) { *tp_up = toupper((unsigned char)*tp_up); tp_up++; }
+
+    // Determine target slot index
+    int slot = ALARM_IDX;  // default: current day
+    int check_slot = 1;
+    if (match_abbrev(token, "MONday"))      slot = 0;
+    else if (match_abbrev(token, "TUEsday")) slot = 1;
+    else if (match_abbrev(token, "WEDnesday")) slot = 2;
+    else if (match_abbrev(token, "THUrsday")) slot = 3;
+    else if (match_abbrev(token, "FRIday"))  slot = 4;
+    else if (match_abbrev(token, "SATurday")) slot = 5;
+    else if (match_abbrev(token, "SUNday"))   slot = 6;
+    else if (match_abbrev(token, "ALL"))      slot = -1;  // all slots
+    else {
+        check_slot = 0;  // not a slot name, treat as param token
+        *p = saved; p = buf;  // rewind and parse normally
+    }
+
+    if (check_slot) {
+        // Move past the slot token
+        if (saved != '\0') { *p = saved; p++; }
+    }
+
+    // Parse HOUR/MIN/SEC/OFF/ON parameters
+    int any_set = 0;
+    int set_slot_start = (slot == -1) ? 0 : slot;
+    int set_slot_end   = (slot == -1) ? ALARM_SLOTS : slot + 1;
+
+    while (1) {
         while (*p == ' ' || *p == '\t') p++;
         if (*p == '\0') break;
 
         token = p;
         while (*p && *p != ' ' && *p != '\t') p++;
-        char saved = *p;
-        *p = '\0';
+        saved = *p; *p = '\0';
 
-        // Uppercase token
         char *tp = token;
         while (*tp) { *tp = toupper((unsigned char)*tp); tp++; }
 
-        // Check for OFF (disable alarm)
+        // OFF / ON
         if (match_abbrev(token, "OFF")) {
-            alarm_enabled = 0;
-            alarm_ringing = 0;
-            beep_off();
-            send_response("OK\r\n");
-            return;
+            int si;
+            for (si = set_slot_start; si < set_slot_end; si++)
+                alarm_enabled_mask &= ~(1 << si);
+            alarm_ringing = 0; beep_off();
+            send_response("OK\r\n"); return;
+        }
+        if (match_abbrev(token, "ON")) {
+            int si;
+            for (si = set_slot_start; si < set_slot_end; si++)
+                alarm_enabled_mask |= (1 << si);
+            send_response("OK\r\n"); return;
         }
 
         // Get value
         char *val_str = NULL;
-        if (saved != '\0') {
-            p++;
-            while (*p == ' ' || *p == '\t') p++;
-            val_str = p;
-            while (*p && *p != ' ' && *p != '\t') p++;
-            saved = *p;
-            *p = '\0';
-        }
+        if (saved != '\0') { p++; while (*p == ' ' || *p == '\t') p++; val_str = p;
+            while (*p && *p != ' ' && *p != '\t') p++; saved = *p; *p = '\0'; }
 
         if (val_str == NULL || val_str[0] == '\0') {
-            send_response("ERROR SYNTAX\r\n");
-            return;
+            send_response("ERROR SYNTAX\r\n"); return;
         }
 
         int val = atoi(val_str);
 
         if (match_abbrev(token, "HOUR")) {
             if (val < 0 || val > 23) { send_response("ERROR RANGE\r\n"); return; }
-            alarm_hour = (uint8_t)val;
+            {
+                int si;
+                for (si = set_slot_start; si < set_slot_end; si++)
+                    alarm_hour[si] = (uint8_t)val;
+            }
             any_set = 1;
         } else if (match_abbrev(token, "MINute")) {
             if (val < 0 || val > 59) { send_response("ERROR RANGE\r\n"); return; }
-            alarm_minute = (uint8_t)val;
+            {
+                int si;
+                for (si = set_slot_start; si < set_slot_end; si++)
+                    alarm_minute[si] = (uint8_t)val;
+            }
             any_set = 1;
         } else if (match_abbrev(token, "SECond")) {
             if (val < 0 || val > 59) { send_response("ERROR RANGE\r\n"); return; }
-            alarm_second = (uint8_t)val;
+            {
+                int si;
+                for (si = set_slot_start; si < set_slot_end; si++)
+                    alarm_second[si] = (uint8_t)val;
+            }
             any_set = 1;
         } else {
-            send_response("ERROR SYNTAX\r\n");
-            return;
+            send_response("ERROR SYNTAX\r\n"); return;
         }
 
         if (saved == '\0') break;
@@ -1644,7 +1725,10 @@ void cmd_set_alarm(const char *params) {
     }
 
     if (any_set) {
-        alarm_enabled = 1;  // setting alarm values auto-enables
+        // setting alarm values auto-enables the slot
+        int si;
+        for (si = set_slot_start; si < set_slot_end; si++)
+            alarm_enabled_mask |= (1 << si);
         send_response("OK\r\n");
     } else {
         send_response("ERROR SYNTAX\r\n");
@@ -1683,10 +1767,16 @@ void cmd_get(const char *params) {
         return;
     }
     if (match_abbrev(p, "ALARM")) {
-        char resp[48];
-        sprintf(resp, "OK %02d %02d %02d %s\r\n",
-            alarm_hour, alarm_minute, alarm_second,
-            alarm_enabled ? "ON" : "OFF");
+        // Return all 7 slots: MON HH MM SS ON/OFF TUE HH MM SS ON/OFF ...
+        char resp[196];
+        int off = sprintf(resp, "OK");
+        int si;
+        for (si = 0; si < ALARM_SLOTS; si++) {
+            off += sprintf(resp + off, " %s %02d %02d %02d %s",
+                DOW_NAMES[si + 1], alarm_hour[si], alarm_minute[si], alarm_second[si],
+                (alarm_enabled_mask & (1 << si)) ? "ON" : "OFF");
+        }
+        sprintf(resp + off, "\r\n");
         send_response(resp);
         return;
     }
@@ -1893,6 +1983,15 @@ int main(void) {
     SysTickIntDisable();
     I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
     SysTickIntEnable();
+
+    // Initialize alarm slots: workdays 08:30, weekends off
+    {
+        int a_i;
+        for (a_i = 0; a_i < ALARM_SLOTS; a_i++) {
+            alarm_hour[a_i] = 6; alarm_minute[a_i] = 0; alarm_second[a_i] = 0;
+        }
+        alarm_enabled_mask = 0x1F;  // Mon-Fri enabled
+    }
 
     // Main loop
     gpio_flash_cnt = 0;

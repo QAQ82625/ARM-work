@@ -1945,7 +1945,9 @@ void process_uart_command(void) {
     } else if (MATCH_CMD(tok, "*PING", 5)) {
         cmd_ping();
     } else {
-        send_response("ERROR\r\n");
+        char err[46];
+        sprintf(err, "ERROR '%s'\r\n", tok);
+        send_response(err);
     }
     #undef MATCH_CMD
 }

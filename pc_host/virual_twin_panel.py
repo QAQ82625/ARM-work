@@ -14,7 +14,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
-from ntp_helper import fetch_ntp_commands, format_time
+from ntp_helper import fetch_ntp_commands, fetch_ntp_time, format_time
 from weather_helper import fetch_weather_command, fetch_weather
 
 
@@ -1228,16 +1228,20 @@ class VirtualTwinPanel(QMainWindow):
         """E1: NTP time sync"""
         self.lbl_ntp_status.setText("同步中...")
         self.lbl_ntp_status.setStyleSheet("color: #FFE66D;")
-        cmds = fetch_ntp_commands()
-        if cmds is None:
+        t = fetch_ntp_time()
+        if t is None:
             self.lbl_ntp_status.setText("失败 (网络?)")
             self.lbl_ntp_status.setStyleSheet("color: #FF6B6B;")
             self.log("NTP同步失败", "error")
             return
+        y, mo, d, h, mi, s = t
+        cmds = [
+            f"*SET:DATE YEAR {y} MONTH {mo} DATE {d}",
+            f"*SET:TIME HOUR {h} MIN {mi} SEC {s}",
+        ]
         for i, cmd in enumerate(cmds):
             QTimer.singleShot(i * 200, lambda c=cmd: self.send_cmd(c))
-        t = fetch_ntp_time()[0]
-        ts = format_time(*t) if t else "OK"
+        ts = format_time(*t)
         self.lbl_ntp_status.setText(f"已同步: {ts}")
         self.lbl_ntp_status.setStyleSheet("color: #95E77E;")
         self.log(f"NTP同步: {ts}", "success")

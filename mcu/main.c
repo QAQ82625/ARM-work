@@ -1056,12 +1056,11 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
             break;
 
         case 8: // USER1 — NTP sync (PC handles via *EVT:KEY USER1)
-            send_response("*EVT:KEY USER1\r\n");
+            if (!suppress_key_event) send_event_key(8);
             break;
 
         case 9: // USER2 — short weather display
             if (weather_temp != -99) {
-                // Show temperature + weather on 7-seg for 5 seconds
                 char wbuf[33];
                 const char *wname[] = {"---", "SUN", "CLD", "OVC", "RAI", "SNO", "FOG"};
                 const char *wn = (weather_code <= 6) ? wname[weather_code] : "---";
@@ -1071,10 +1070,9 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
                     sprintf(wbuf, "%3dC %s", weather_temp, wn);
                 cmd_set_msg(wbuf);
             } else {
-                // No weather data
                 cmd_set_msg("-- C ---");
             }
-            send_response("*EVT:KEY USER2\r\n");
+            if (!suppress_key_event) send_event_key(9);
             break;
     }
 }
@@ -1493,6 +1491,7 @@ void cmd_set_beep(const char *params) {
 
     // Non-blocking: start beep and set timer
     beep_on();
+    beep_active = 1;
     beep_timer = (uint8_t)((duration + 50) / 100);  // convert ms to 100ms ticks
     if (beep_timer < 1) beep_timer = 1;
 

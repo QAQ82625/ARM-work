@@ -1209,9 +1209,13 @@ class VirtualTwinPanel(QMainWindow):
 
     # ── 虚拟按键 ────────────────────────────
     def _on_key_click(self, name):
-        cmd = f"*SET:KEY {name}"
-        self.send_cmd(cmd)
+        self.send_cmd(f"*SET:KEY {name}")
         self.log(f"按键: {name}", "event")
+        # USER1/USER2 also trigger PC-side actions directly
+        if name == "USER1":
+            QTimer.singleShot(200, self._on_ntp_sync)
+        elif name == "USER2":
+            QTimer.singleShot(200, self._on_weather_fetch)
         btn = self.key_btns.get(name)
         if btn:
             btn.setStyleSheet(

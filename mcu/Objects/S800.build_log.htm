@@ -27,7 +27,18 @@ Project File Date:  06/08/2026
 <h2>Output:</h2>
 *** Using Compiler 'V5.06 update 6 (build 750)', folder: 'C:\Keil_v5\ARM\ARMCC\Bin'
 Build target 'Target 1'
-".\Objects\S800.axf" - 0 Error(s), 0 Warning(s).
+compiling main.c...
+main.c(1072): warning:  #223-D: function "cmd_set_msg" declared implicitly
+                  cmd_set_msg(wbuf);
+main.c(1075): warning:  #223-D: function "cmd_set_msg" declared implicitly
+                  cmd_set_msg("-- C ---");
+main.c(1446): warning:  #159-D: declaration is incompatible with previous "cmd_set_msg"  (declared at line 1072)
+  void cmd_set_msg(const char *params) {
+main.c: 3 warnings, 0 errors
+linking...
+Program Size: Code=20736 RO-data=2520 RW-data=268 ZI-data=916  
+FromELF: creating hex file...
+".\Objects\S800.axf" - 0 Error(s), 3 Warning(s).
 
 <h2>Software Packages used:</h2>
 
@@ -53,10 +64,10 @@ Package Vendor: Keil
    * Component: ARM::CMSIS:CORE:5.1.2
 
    * Component: Keil::Device:Startup:1.0.0
-      Source file:   Device\Source\system_TM4C129.c
       Include file:  Device\Include\TM4C129\TM4C129.h
+      Source file:   Device\Source\system_TM4C129.c
       Source file:   Device\Source\ARM\startup_TM4C129.s
-Build Time Elapsed:  00:00:00
+Build Time Elapsed:  00:00:01
 </pre>
 </body>
 </html>

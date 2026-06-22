@@ -1249,37 +1249,45 @@ void cmd_set_date(const char *params) {
         while (*s) { *s = toupper((unsigned char)*s); s++; }
     }
 
-    // Match keywords to positions; collect values from remaining positions
-    int yr_val = -1, mo_val = -1, dy_val = -1;
+    // Track which keywords were explicitly mentioned
+    int yr_kw = 0, mo_kw = 0, dy_kw = 0;
     int kw_count = 0;
     for (i = 0; i < ntok; i++) {
-        if (match_abbrev(tokens[i], "YEAR"))  { kw_count++; continue; }
-        if (match_abbrev(tokens[i], "MONTH")) { kw_count++; continue; }
-        if (match_abbrev(tokens[i], "DATE"))  { kw_count++; continue; }
-        // Unknown token — reject if not a number (e.g. "MONT" abbreviation)
-        if (!isdigit((unsigned char)tokens[i][0]) && tokens[i][0] != '-')
-            { send_response("ERROR SYNTAX\r\n"); return; }
-        if (yr_val < 0) yr_val = i;
-        else if (mo_val < 0) mo_val = i;
-        else dy_val = i;
+        if (match_abbrev(tokens[i], "YEAR"))  { yr_kw = 1; kw_count++; continue; }
+        if (match_abbrev(tokens[i], "MONTH")) { mo_kw = 1; kw_count++; continue; }
+        if (match_abbrev(tokens[i], "DATE"))  { dy_kw = 1; kw_count++; continue; }
     }
     if (kw_count == 0) { send_response("ERROR SYNTAX\r\n"); return; }
 
+    // Assign values in order, but only to keywords that were actually present
+    int yr_val = -1, mo_val = -1, dy_val = -1;
+    int val_idx = 0;
+    int vals[4] = {-1, -1, -1, -1};
+    for (i = 0; i < ntok; i++) {
+        if (match_abbrev(tokens[i], "YEAR"))  continue;
+        if (match_abbrev(tokens[i], "MONTH")) continue;
+        if (match_abbrev(tokens[i], "DATE"))  continue;
+        if (!isdigit((unsigned char)tokens[i][0]) && tokens[i][0] != '-')
+            { send_response("ERROR SYNTAX\r\n"); return; }
+        if (val_idx < 4) vals[val_idx++] = atoi(tokens[i]);
+    }
+    val_idx = 0;
+    if (yr_kw && val_idx < 4) yr_val = vals[val_idx++];
+    if (mo_kw && val_idx < 4) mo_val = vals[val_idx++];
+    if (dy_kw && val_idx < 4) dy_val = vals[val_idx++];
+
     int any_set = 0;
     if (yr_val >= 0) {
-        int v = atoi(tokens[yr_val]);
-        if (v < 2025 || v > 2099) { send_response("ERROR RANGE\r\n"); return; }
-        year = (uint16_t)v; any_set = 1;
+        if (yr_val < 2025 || yr_val > 2099) { send_response("ERROR RANGE\r\n"); return; }
+        year = (uint16_t)yr_val; any_set = 1;
     }
     if (mo_val >= 0) {
-        int v = atoi(tokens[mo_val]);
-        if (v < 1 || v > 12) { send_response("ERROR RANGE\r\n"); return; }
-        month = (uint8_t)v; any_set = 1;
+        if (mo_val < 1 || mo_val > 12) { send_response("ERROR RANGE\r\n"); return; }
+        month = (uint8_t)mo_val; any_set = 1;
     }
     if (dy_val >= 0) {
-        int v = atoi(tokens[dy_val]);
-        if (v < 1 || v > 31) { send_response("ERROR RANGE\r\n"); return; }
-        day = (uint8_t)v; any_set = 1;
+        if (dy_val < 1 || dy_val > 31) { send_response("ERROR RANGE\r\n"); return; }
+        day = (uint8_t)dy_val; any_set = 1;
     }
 
     if (day > get_days_in_month(year, month))

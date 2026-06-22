@@ -1900,11 +1900,11 @@ void process_uart_command(void) {
 int main(void) {
     volatile uint16_t gpio_flash_cnt;
 
-    // 25MHz external crystal → PLL 480MHz → SYSDIV 24 = 20MHz (exact)
-    // UART 115200 error: 0.06% vs PIOSC ±3% — eliminates bit corruption
-    // Internal oscillator (PIOSC) — correct SysTick timing on S800 board
+    // Use external 25MHz crystal — eliminates PIOSC ±3% baud rate drift.
+    // PLL: 25MHz/5*96=480MHz VCO, /24=20MHz (exact).
+    // UART 115200 IBRD=10 FBRD=54 → 115,273 bps, error 0.06%.
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
+        (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
         20000000);
 
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);

@@ -139,6 +139,7 @@ void        send_event_key(uint8_t key_idx);
 void        send_event_alarm(uint8_t on);
 void        send_event_edit(const char *type, const char *value);
 void        send_event_mode(const char *state);
+void        cmd_set_msg(const char *params);
 
 // Key scanning
 void        key_scan(void);
@@ -1900,10 +1901,10 @@ void process_uart_command(void) {
 int main(void) {
     volatile uint16_t gpio_flash_cnt;
 
-    // S800 board has 25MHz external crystal → PLL 480MHz → /24 = 20MHz.
-    // UART 115200 at OSC_MAIN: drift <0.1% vs PIOSC ±3%.
+    // PIOSC 16MHz → PLL 480MHz → /24 = 20MHz (stable SysTick timing).
+    // OSC_MAIN not usable: board has no 25MHz external crystal.
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
+        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
         20000000);
 
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);
@@ -2108,7 +2109,7 @@ void S800_UART_Init(void) {
     GPIOPinConfigure(GPIO_PA1_U0TX);
 
     GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
-
+    UARTClockSourceSet(UART0_BASE, UART_CLOCK_SYSTEM);
     UARTConfigSetExpClk(UART0_BASE, ui32SysClock, 115200,
         (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
     UARTFIFOLevelSet(UART0_BASE, UART_FIFO_TX6_8, UART_FIFO_RX6_8);
@@ -2294,7 +2295,7 @@ void UART0_Handler(void) {
                 // Line exceeded 64 chars — discard and report
                 receive_overflow = 0;
                 i = 0;
-                memset(receive, 0, sizeof(receive));
+                memset((void *)receive, 0, sizeof(receive));
                 err_line_too_long = 1;  // error deferred to foreground
                 return;
             }
@@ -2319,7 +2320,7 @@ void UART0_Handler(void) {
         if (receive_overflow) {
             receive_overflow = 0;
             i = 0;
-            memset(receive, 0, sizeof(receive));
+            memset((void *)receive, 0, sizeof(receive));
             UARTStringPut((uint8_t *)"ERROR LINE TOO LONG\r\n");
             return;
         }

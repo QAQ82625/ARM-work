@@ -1414,14 +1414,17 @@ class VirtualTwinPanel(QMainWindow):
     # 数据接收与协议解析（增强版）
     # ================================================================
     def handle_data(self, data):
-        if self.show_recv.isChecked():
+        data_upper = data.upper()
+
+        # Heartbeat events handled silently (flood the log otherwise)
+        is_heartbeat = data_upper.startswith("*EVT:DISP") or data_upper.startswith("*EVT:LED")
+
+        if self.show_recv.isChecked() and not is_heartbeat:
             self.log(f"{data}", "recv")
 
         # RX LED 闪烁
         self.leds2[0].set_state(True)
         QTimer.singleShot(100, lambda: self.leds2[0].set_state(False))
-
-        data_upper = data.upper()
 
         # ── *EVT:DISP <8chars> <dpHex> ──
         if data_upper.startswith("*EVT:DISP"):

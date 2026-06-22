@@ -1256,7 +1256,9 @@ void cmd_set_date(const char *params) {
         if (match_abbrev(tokens[i], "YEAR"))  { kw_count++; continue; }
         if (match_abbrev(tokens[i], "MONTH")) { kw_count++; continue; }
         if (match_abbrev(tokens[i], "DATE"))  { kw_count++; continue; }
-        // This is a numeric value; assign to first unmatched keyword
+        // Unknown token — reject if not a number (e.g. "MONT" abbreviation)
+        if (!isdigit((unsigned char)tokens[i][0]) && tokens[i][0] != '-')
+            { send_response("ERROR SYNTAX\r\n"); return; }
         if (yr_val < 0) yr_val = i;
         else if (mo_val < 0) mo_val = i;
         else dy_val = i;
@@ -1323,6 +1325,8 @@ void cmd_set_time(const char *params) {
         if (match_abbrev(tokens[i], "HOUR"))   continue;
         if (match_abbrev(tokens[i], "MINute")) continue;
         if (match_abbrev(tokens[i], "SECond")) continue;
+        if (!isdigit((unsigned char)tokens[i][0]) && tokens[i][0] != '-')
+            { send_response("ERROR SYNTAX\r\n"); return; }
         int v = atoi(tokens[i]);
         if (h_val < 0) h_val = v;
         else if (m_val < 0) m_val = v;
@@ -1623,6 +1627,8 @@ void cmd_set_alarm(const char *params) {
         if (match_abbrev(tokens[i], "HOUR"))   continue;
         if (match_abbrev(tokens[i], "MINute")) continue;
         if (match_abbrev(tokens[i], "SECond")) continue;
+        if (!isdigit((unsigned char)tokens[i][0]) && tokens[i][0] != '-')
+            { send_response("ERROR SYNTAX\r\n"); return; }
         int v = atoi(tokens[i]);
         if (h_val < 0) h_val = v;
         else if (m_val < 0) m_val = v;
@@ -1867,9 +1873,12 @@ void process_uart_command(void) {
                (int)strlen(tok) <= 12) {
         const char *sub = params;
         if (tok[4] == ':' && tok[5] != '\0') {
-            sub = tok + 5;
+            sub = tok + 5;  // sub-command appended to "*GET:"
+        } else if (tok[4] == ':') {
+            // trailing colon, sub-command is in params (e.g. *GET: TIME)
+            sub = params;
         } else if (tok[4] != '\0') {
-            sub = tok + 4;
+            sub = tok + 4;  // no colon, e.g. *GETTIME
         }
         cmd_get(sub);
     } else if (MATCH_CMD(tok, "*PING", 5)) {

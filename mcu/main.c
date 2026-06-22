@@ -173,6 +173,7 @@ volatile int i = 0;
 volatile char receive[65];                       // RX line buffer, ISR+foreground shared
 volatile uint8_t uart_cmd_ready = 0;
 static uint8_t receive_overflow = 0;             // 1 = line exceeded 64 chars
+static volatile uint8_t err_line_too_long = 0;   // set by ISR, cleared by foreground
 const char *ATCLASS = "AT+CLASS#";
 const char *ATCODE = "AT+STUDENTCODE#";
 const char *CLASS = "CLASSF17XXXXX";
@@ -1772,11 +1773,16 @@ void cmd_ping(void) {
 
 /************************** UART command processor **************************/
 void process_uart_command(void) {
+    // Critical section: disable RX interrupt during copy.
+    // ISR cannot fire, cannot modify receive[]/i/uart_cmd_ready.
+    UARTIntDisable(UART0_BASE, UART_INT_RX | UART_INT_RT);
     strncpy(cmd_parse_buf, (const char *)receive, sizeof(cmd_parse_buf));
     cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';
     memset((void *)receive, 0, sizeof(receive));
     i = 0;
-    uart_cmd_ready = 0;  // clear AFTER copy — ISR blind window is ~5us, not ~5ms
+    uart_cmd_ready = 0;
+    UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
+    // Window closed — ISR can now safely receive next command
 
     // Trim whitespace
     char *p = cmd_parse_buf;
@@ -2085,6 +2091,12 @@ int main(void) {
         if (uart_cmd_ready) {
             process_uart_command();
         }
+
+        // ---- Deferred ISR errors (moved out of ISR to avoid blocking TX) ----
+        if (err_line_too_long) {
+            err_line_too_long = 0;
+            UARTStringPut((uint8_t *)"ERROR LINE TOO LONG\r\n");
+        }
     }
 }
 
@@ -2285,7 +2297,7 @@ void UART0_Handler(void) {
                 receive_overflow = 0;
                 i = 0;
                 memset(receive, 0, sizeof(receive));
-                UARTStringPut((uint8_t *)"ERROR LINE TOO LONG\r\n");
+                err_line_too_long = 1;  // error deferred to foreground
                 return;
             }
             receive[i] = '\0';

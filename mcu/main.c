@@ -167,10 +167,11 @@ volatile uint8_t  result, cnt, key_value, gpio_status;
 volatile uint8_t  rightshift = 0x01;
 uint32_t ui32SysClock, ui32IntPriorityMask;
 uint8_t uart_receive_char;
-int i = 0;
-char receive[65];                                // 64 chars + null terminator
+volatile int i = 0;
+volatile char receive[65];                       // RX line buffer, ISR+foreground shared
 volatile uint8_t uart_cmd_ready = 0;
-static uint8_t receive_overflow = 0;             // 1 = line exceeded 64 chars
+static volatile uint8_t receive_overflow = 0;    // 1 = line exceeded 64 chars
+static volatile uint8_t rx_busy = 0;             // ISR gate: don't clobber receive[] while foreground processes
 const char *ATCLASS = "AT+CLASS#";
 const char *ATCODE = "AT+STUDENTCODE#";
 const char *CLASS = "CLASSF17XXXXX";
@@ -1781,15 +1782,16 @@ void cmd_ping(void) {
 void process_uart_command(void) {
     uart_cmd_ready = 0;  // clear flag first
 
-    // Protect receive[] from UART ISR during copy — disable RX int briefly.
-    // ISR and process_uart_command share receive[] and 'i'; without protection
-    // a new char arriving mid-copy corrupts the command line (bit5 pattern).
+    // Lock gate: ISR sees rx_busy=1 and discards chars that arrive before
+    // we finish processing. Combined with volatile i/receive for correctness.
+    rx_busy = 1;
     UARTIntDisable(UART0_BASE, UART_INT_RX | UART_INT_RT);
-    strncpy(cmd_parse_buf, receive, sizeof(cmd_parse_buf));
+    strncpy(cmd_parse_buf, (const char *)receive, sizeof(cmd_parse_buf));
     cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';
-    memset(receive, 0, sizeof(receive));
-    i = 0;  // reset shared index
+    memset((void *)receive, 0, sizeof(receive));
+    i = 0;
     UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
+    rx_busy = 0;
 
     // Trim whitespace
     char *p = cmd_parse_buf;
@@ -2261,6 +2263,10 @@ void UART0_Handler(void) {
     // Read available characters
     while (UARTCharsAvail(UART0_BASE)) {
         char ch = (char)UARTCharGetNonBlocking(UART0_BASE);
+
+        // Gate: if foreground is still processing previous command, discard.
+        // rx_busy is cleared by process_uart_command() after safe copy.
+        if (rx_busy) continue;
 
         // Handle \r\n line ending
         if (ch == '\r') continue;  // skip CR

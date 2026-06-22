@@ -170,8 +170,7 @@ uint8_t uart_receive_char;
 volatile int i = 0;
 volatile char receive[65];                       // RX line buffer, ISR+foreground shared
 volatile uint8_t uart_cmd_ready = 0;
-static volatile uint8_t receive_overflow = 0;    // 1 = line exceeded 64 chars
-static volatile uint8_t rx_busy = 0;             // ISR gate: don't clobber receive[] while foreground processes
+static uint8_t receive_overflow = 0;             // 1 = line exceeded 64 chars
 const char *ATCLASS = "AT+CLASS#";
 const char *ATCODE = "AT+STUDENTCODE#";
 const char *CLASS = "CLASSF17XXXXX";
@@ -1780,18 +1779,15 @@ void cmd_ping(void) {
 
 /************************** UART command processor **************************/
 void process_uart_command(void) {
-    // Set gate FIRST: ISR sees rx_busy=1 and discards incoming chars.
-    // Order matters — if uart_cmd_ready is cleared before rx_busy is set,
-    // a UART ISR in between would see rx_busy=0 and write to receive[].
-    rx_busy = 1;
-    uart_cmd_ready = 0;  // clear flag AFTER gate is armed
+    uart_cmd_ready = 0;
+
+    // Copy receive[] safely — disable RX interrupt during the window
     UARTIntDisable(UART0_BASE, UART_INT_RX | UART_INT_RT);
     strncpy(cmd_parse_buf, (const char *)receive, sizeof(cmd_parse_buf));
     cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';
     memset((void *)receive, 0, sizeof(receive));
     i = 0;
     UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
-    rx_busy = 0;
 
     // Trim whitespace
     char *p = cmd_parse_buf;
@@ -1910,9 +1906,9 @@ void process_uart_command(void) {
 int main(void) {
     volatile uint16_t gpio_flash_cnt;
 
-    // System clock init — S800 uses 25MHz external crystal
+    // System clock init — internal oscillator (known working configuration)
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
+        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
         20000000);
 
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);
@@ -2264,14 +2260,12 @@ void UART0_Handler(void) {
     while (UARTCharsAvail(UART0_BASE)) {
         char ch = (char)UARTCharGetNonBlocking(UART0_BASE);
 
-        // Gate: if foreground is still processing previous command, discard.
-        // rx_busy is cleared by process_uart_command() after safe copy.
-        if (rx_busy) continue;
-
         // Handle \r\n line ending
         if (ch == '\r') continue;  // skip CR
         if (ch == '\n') {
-            // Complete line received
+            // If foreground hasn't processed the previous command yet,
+            // discard this new line to prevent receive[] corruption.
+            if (uart_cmd_ready) { i = 0; return; }
             if (receive_overflow) {
                 // Line exceeded 64 chars — discard and report
                 receive_overflow = 0;

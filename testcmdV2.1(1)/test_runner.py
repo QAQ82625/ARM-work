@@ -15,7 +15,7 @@ import re
 from datetime import datetime
 
 # ── 配置 ──────────────────────────────────────────────
-BAUDRATE        = 38400
+BAUDRATE        = 115200
 RESPONSE_TIMEOUT = 3.0   # 等待第一条应答最长秒数
 POST_DRAIN      = 0.1    # 收到应答后再捞 EVT 的窗口（秒）
 DEFAULT_DELAY   = 0.1    # 命令间固定间隔（秒），最大 0.5

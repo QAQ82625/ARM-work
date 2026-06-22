@@ -375,7 +375,7 @@ class VirtualTwinPanel(QMainWindow):
         layout.addWidget(QLabel("波特率:"))
         self.baud_combo = QComboBox()
         self.baud_combo.addItems(["115200", "9600", "38400", "57600"])
-        self.baud_combo.setCurrentText("38400")
+        self.baud_combo.setCurrentText("115200")
         layout.addWidget(self.baud_combo)
 
         layout.addStretch()

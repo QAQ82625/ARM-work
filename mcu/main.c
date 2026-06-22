@@ -446,13 +446,17 @@ void beep_off(void) {
 /************************** Alarm state machine **************************/
 void alarm_check(void) {
     if (alarm_snooze) return;
-    if (!ALARM_CUR_ENABLED) return;
+
+    // Compute slot index ONCE — macros re-evaluate (day_of_week - 1) each time
+    uint8_t idx = day_of_week - 1;
+    if (idx >= ALARM_SLOTS) return;
+    if (!(alarm_enabled_mask & (1 << idx))) return;
 
     // Check if current time matches today's alarm time
     if (!alarm_ringing &&
-        hour == ALARM_CUR_HOUR &&
-        minute == ALARM_CUR_MIN &&
-        second == ALARM_CUR_SEC) {
+        hour == alarm_hour[idx] &&
+        minute == alarm_minute[idx] &&
+        second == alarm_second[idx]) {
         // Start alarm
         alarm_ringing = 1;
         alarm_beep_phase = 0;

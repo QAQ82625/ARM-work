@@ -1,14 +1,20 @@
+/**
+ * 智能时钟系统 — MCU 端主程序
+ * 基于 TM4C1294NCPDT (S800 板)
+ * ARM Compiler 5 (C89) 兼容
+ */
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
-#include <ctype.h>
-#include <stdlib.h>
 #include "hw_memmap.h"
+#include "hw_ints.h"
+#include "hw_types.h"
+#include "hw_gpio.h"
 #include "debug.h"
 #include "gpio.h"
 #include "hw_i2c.h"
-#include "hw_types.h"
 #include "i2c.h"
 #include "timer.h"
 #include "pin_map.h"
@@ -16,176 +22,40 @@
 #include "systick.h"
 #include "interrupt.h"
 #include "uart.h"
-#include "hw_ints.h"
+#include <ctype.h>
+#include <stdlib.h>
 
-/************************** NOP macro **************************/
-#ifndef __NOP
-#define __NOP() __asm volatile ("nop")
-#endif
+/* ================================================================
+ * 硬件地址与常量
+ * ================================================================ */
+#define SYSTICK_FREQUENCY       1000UL
+#define UART_RX_BUF_SIZE        128
 
-#define SYSTICK_FREQUENCY       1000        // 1000Hz
-#define I2C_FLASHTIME           500         // 500ms
-#define GPIO_FLASHTIME          300         // 300ms
-
-/************************** I2C device addresses **************************/
 #define TCA6424_I2CADDR         0x22
 #define PCA9557_I2CADDR         0x18
-
 #define PCA9557_INPUT           0x00
 #define PCA9557_OUTPUT          0x01
 #define PCA9557_POLINVERT       0x02
 #define PCA9557_CONFIG          0x03
-
-#define TCA6424_CONFIG_PORT0    0x0c
-#define TCA6424_CONFIG_PORT1    0x0d
-#define TCA6424_CONFIG_PORT2    0x0e
-
 #define TCA6424_INPUT_PORT0     0x00
 #define TCA6424_INPUT_PORT1     0x01
 #define TCA6424_INPUT_PORT2     0x02
-
 #define TCA6424_OUTPUT_PORT0    0x04
 #define TCA6424_OUTPUT_PORT1    0x05
 #define TCA6424_OUTPUT_PORT2    0x06
+#define TCA6424_CONFIG_PORT0    0x0C
+#define TCA6424_CONFIG_PORT1    0x0D
+#define TCA6424_CONFIG_PORT2    0x0E
 
-/************************** Display configuration **************************/
-#define DP_SEG                  0x80
-#define SCAN_REVERSE            0
-#define SEPARATOR_STYLE         0
-#define BRIGHTNESS              1
+#define DISP_LEN                8
+#define SCROLL_BUF_SIZE         40
+#define KEY_QUEUE_SIZE          16
+#define KEY_DEBOUNCE_MS         40
+#define KEY_LONG_MS             800
+#define KEY_REPEAT_MS           150
+#define LINE_MAX                65
 
-/************************** Boot timing (unit: 10ms) **************************/
-#define BOOT_FULL_BRIGHT        100     // all segments on for 1s
-#define BOOT_FULL_OFF           100     // all off for 1s
-#define BOOT_STUDENT_ID         300     // student ID for 3s
-#define BOOT_NAME               300     // name for 3s
-#define BOOT_VERSION            200     // version for 2s
-
-#define STUDENT_ID              "20260001"
-#define STUDENT_NAME            "HUZHENYE"
-#define SOFTWARE_VERSION        "V1.0    "
-
-/************************** Display modes **************************/
-#define DISP_MODE_TIME          0       // HH.MM.SS
-#define DISP_MODE_DATE_SHORT    1       // YY.MM.DD
-#define DISP_MODE_DATE_LONG     2       // YYYY.MMDD
-
-/************************** Edit modes **************************/
-#define EDIT_NONE               0
-#define EDIT_DATE               1
-#define EDIT_TIME               2
-#define EDIT_ALARM              3
-
-#define EDIT_FIELD_YEAR         0
-#define EDIT_FIELD_MONTH        1
-#define EDIT_FIELD_DAY          2
-#define EDIT_FIELD_HOUR         0
-#define EDIT_FIELD_MINUTE       1
-#define EDIT_FIELD_SECOND       2
-
-/************************** Scroll speed presets **************************/
-#define SCROLL_SPEED_SLOW       5       // advance every 500ms (5 * 100ms)
-#define SCROLL_SPEED_FAST       2       // advance every 200ms (2 * 100ms)
-
-/************************** LED bit assignments **************************/
-#define LED_HEARTBEAT           0x01    // bit 0 — heartbeat 1Hz
-#define LED_ALARM               0x02    // bit 1 — alarm enabled/ringing
-#define LED_EDIT                0x04    // bit 2 — edit mode active
-#define LED_TX                  0x08    // bit 3 — TX activity (300ms blink)
-#define LED_RX                  0x10    // bit 4 — RX activity / NTP synced (steady)
-#define LED_SUN                 0x20    // bit 5 — weather SUN
-#define LED_RAI_SNO             0x40    // bit 6 — weather RAI/SNO
-#define LED_HI_TEMP             0x80    // bit 7 — temp >=30°C
-
-/************************** Beeper control **************************/
-// PS1720P02 (C96061) passive piezo buzzer on PN1.
-// Drive with 2kHz square wave via GPIO toggle in 250µs timer ISR.
-#define BEEPER_PORT             GPIO_PORTN_BASE
-#define BEEPER_PIN              GPIO_PIN_1
-
-/************************** Key names (for protocol) **************************/
-static const char *KEY_NAMES[] = {
-    "ADD", "FUNC", "SHIFT", "SPEED",
-    "SAVE", "FORMAT", "DISP", "EXT",
-    "USER1", "USER2"
-};
-#define NUM_KEYS 10
-
-/************************** Function declarations **************************/
-void        Delay(uint32_t value);
-void        Delay_us(uint32_t us);
-void        S800_GPIO_Init(void);
-uint8_t     I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData);
-uint8_t     I2C0_ReadByte(uint8_t DevAddr, uint8_t RegAddr);
-void        S800_I2C0_Init(void);
-void        S800_UART_Init(void);
-void        Boot_Sequence(void);
-uint8_t     CharToSeg7(char c);
-void        ShowString(const char *str, uint32_t duration, uint8_t led_state);
-
-// Time/date
-uint8_t     is_leap_year(uint16_t year);
-uint8_t     get_days_in_month(uint16_t year, uint8_t month);
-void        update_time(void);
-void        update_display(void);
-
-// Protocol
-int         match_abbrev(const char *input, const char *full);
-void        process_uart_command(void);
-void        send_response(const char *msg);
-void        send_event_disp(void);
-void        send_event_led(void);
-void        send_event_key(uint8_t key_idx);
-void        send_event_alarm(uint8_t on);
-void        send_event_edit(const char *type, const char *value);
-void        send_event_mode(const char *state);
-void        cmd_set_msg(const char *params);
-
-// Key scanning
-void        key_scan(void);
-void        key_action(uint8_t key_idx, uint8_t long_press);
-
-// LED / beeper
-void        led_update(void);
-void        beep_on(void);
-void        beep_off(void);
-void        alarm_check(void);
-void        alarm_stop(void);
-
-// Edit state machine
-void        edit_enter(uint8_t mode);
-void        edit_exit(uint8_t save);
-void        edit_tick(void);
-
-/************************** Segment font table **************************/
-uint8_t seg7[] = {
-    0x3f,0x06,0x5b,0x4f,0x66,0x6d,0x7d,0x07,0x7f,0x6f,
-    0x77,0x7c,0x58,0x5e,0x79,0x71,0x5c,0x00,0x40
-};
-
-/************************** System tick variables **************************/
-volatile uint16_t systick_10ms_counter, systick_100ms_counter;
-volatile uint8_t  systick_10ms_status, systick_100ms_status;
-volatile uint8_t  result, cnt, key_value, gpio_status;
-volatile uint8_t  rightshift = 0x01;
-uint32_t ui32SysClock, ui32IntPriorityMask;
-uint8_t uart_receive_char;
-volatile int i = 0;
-volatile char receive[65];                       // RX line buffer, ISR+foreground shared
-volatile uint8_t uart_cmd_ready = 0;
-static uint8_t receive_overflow = 0;             // 1 = line exceeded 64 chars
-static volatile uint8_t err_line_too_long = 0;   // set by ISR, cleared by foreground
-const char *ATCLASS = "AT+CLASS#";
-const char *ATCODE = "AT+STUDENTCODE#";
-const char *CLASS = "CLASSF17XXXXX";
-const char *CODE = "CODE517XXXXXXX";
-
-/************************** Time/date state **************************/
-volatile uint8_t  hour = 12, minute = 34, second = 56;
-volatile uint16_t year = 2026;
-volatile uint8_t  month = 6, day = 8;
-
-/************************** Day-of-week tracking **************************/
+#define ALARM_SLOTS             7
 #define DOW_MON 1
 #define DOW_TUE 2
 #define DOW_WED 3
@@ -193,1951 +63,1007 @@ volatile uint8_t  month = 6, day = 8;
 #define DOW_FRI 5
 #define DOW_SAT 6
 #define DOW_SUN 7
-volatile uint8_t  day_of_week = DOW_MON;       // 2026-06-08 = Monday
-static const char *DOW_NAMES[] = {"","MON","TUE","WED","THU","FRI","SAT","SUN"};
 
-/************************** Alarm state — 7 slots (Mon-Sun) **************************/
-#define ALARM_SLOTS 7
-volatile uint8_t  alarm_hour[ALARM_SLOTS];      // per-day alarm hour
-volatile uint8_t  alarm_minute[ALARM_SLOTS];    // per-day alarm minute
-volatile uint8_t  alarm_second[ALARM_SLOTS];    // per-day alarm second
-volatile uint8_t  alarm_enabled_mask;           // bit 0=Mon ... bit 6=Sun
+#define DISP_MODE_TIME          0
+#define DISP_MODE_DATE_SHORT    1
+#define DISP_MODE_DATE_LONG     2
 
-#define ALARM_IDX          (day_of_week - 1)
-#define ALARM_CUR_HOUR     alarm_hour[ALARM_IDX]
-#define ALARM_CUR_MIN      alarm_minute[ALARM_IDX]
-#define ALARM_CUR_SEC      alarm_second[ALARM_IDX]
-#define ALARM_CUR_ENABLED  (alarm_enabled_mask & (1 << ALARM_IDX))
-#define ALARM_SET_ENABLED  (alarm_enabled_mask |= (1 << ALARM_IDX))
-#define ALARM_SET_DISABLED (alarm_enabled_mask &= ~(1 << ALARM_IDX))
+#define LED_HEARTBEAT           0x01
+#define LED_ALARM               0x02
+#define LED_EDIT                0x04
+#define LED_TX                  0x08
+#define LED_RX                  0x10
+#define LED_SUN                 0x20
+#define LED_RAI_SNO             0x40
+#define LED_HI_TEMP             0x80
 
-volatile uint8_t  alarm_ringing = 0;
-static uint8_t    alarm_beep_phase = 0;
-static uint8_t    alarm_beep_timer = 0;
-static uint8_t    alarm_total_timer = 0;
-static uint8_t    alarm_snooze = 0;
-static uint8_t    alarm_led_blink = 0;
+/* Convert g_date.wday (0=Sun,1=Mon..6=Sat) to alarm slot (0=Mon..6=Sun) */
+#define ALARM_IDX  ((uint8_t)(g_date.wday == 0 ? 6 : g_date.wday - 1))
 
-/************************** Display state **************************/
-uint8_t  disp_mode = DISP_MODE_TIME;
-uint8_t  disp_on = 1;
-static uint8_t sec_counter = 0;
-uint8_t  disp_buf[8] = {0};
-uint8_t  dp_buf[8] = {0};
-char     disp_chars[9] = "        ";       // 8 ASCII chars for *EVT:DISP
-volatile uint8_t scan_cnt = 0;
+/* ================================================================
+ * 段码表
+ * ================================================================ */
+static const uint8_t seg7_table[] = {
+    0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F, /* 0-9 */
+    0x77,0x7C,0x39,0x5E,0x79,0x71,0x3D,0x76,0x30,0x1E, /* A-J */
+    0x7A,0x3C,0x55,0x37,0x3F,0x73,0x67,0x70,0x6D,0x78, /* K-T */
+    0x3E,0x1C,0x6A,0x36,0x6E,0x49                     /* U-Z */
+};
 
-/************************** Format / scroll state **************************/
-uint8_t  format_direction = 0;             // 0=LEFT, 1=RIGHT
-uint8_t  scroll_speed_level = 0;           // 0=slow(500ms), 1=fast(200ms)
-char     scroll_msg[33] = {0};             // scroll message (max 32 chars)
-uint8_t  scroll_active = 0;                // scroll message is active
-uint8_t  scroll_pos = 0;                   // current scroll offset
-uint8_t  scroll_len = 0;                   // length of scroll message
-static uint8_t scroll_timer = 0;           // 100ms ticks for scroll advance
-static uint8_t scroll_cycle_count = 0;     // completed cycles for auto-return
-static uint8_t scroll_static_timer = 0;    // for ≤8-char static display (1s ticks)
+static uint8_t seg7_encode(char ch)
+{
+    if (ch >= '0' && ch <= '9') return seg7_table[ch - '0'];
+    if (ch >= 'A' && ch <= 'Z') return seg7_table[ch - 'A' + 10];
+    if (ch >= 'a' && ch <= 'z') {
+        switch (ch) {
+            case 'c': return 0x58; case 'e': return 0x7B;
+            case 'h': return 0x74; case 'i': return 0x10;
+            case 'j': return 0x0E; case 'l': return 0x38;
+            case 'n': return 0x54; case 'o': return 0x5C;
+            case 'r': return 0x50; case 'u': return 0x1C;
+            default:  return seg7_table[ch - 'a' + 10];
+        }
+    }
+    if (ch == '-')  return 0x40;
+    if (ch == '_')  return 0x08;
+    if (ch == ' ')  return 0x00;
+    return 0x00;
+}
 
-/************************** LED state **************************/
-volatile uint8_t led_byte = 0x00;          // PCA9557 LED byte
-static uint8_t   led_takeover = 0;         // 1 = *SET:LED override, inhibits auto-LED logic
-static uint8_t   ext_led_blink = 0;          // >0: EXT key LED blink pending (100ms ticks)
-static volatile uint8_t led_heartbeat_timer = 0;  // 100ms ticks for heartbeat toggle
-static volatile uint8_t uart_tx_timer = 0;        // TX LED blink duration (ISR→foreground)
-static volatile uint8_t uart_rx_timer = 0;        // RX LED blink duration (ISR→foreground)
+/* ================================================================
+ * 数据类型
+ * ================================================================ */
+typedef struct {
+    uint16_t y;
+    uint8_t  m, d, wday;
+} date_t;
 
-/************************** Weather / NTP state (E1/E2 extensions) **************************/
-static int8_t   weather_temp = -99;        // temperature in Celsius (-99 = no data)
-static uint8_t  weather_code = 0;          // 0=none, 1=SUN, 2=CLD, 3=OVC, 4=RAI, 5=SNO, 6=FOG
-static uint8_t  weather_age = 0;           // seconds since last update (255=stale)
-static uint8_t  ntp_synced = 0;            // 0=unsynced, 1=synced, 2=drift>24h
-static uint32_t ntp_last_sync = 0;         // uptime_seconds at last sync
+typedef struct {
+    uint8_t h, mi, s;
+} time_t_;
 
-/************************** Key state **************************/
-static uint16_t key_debounce[10] = {0};    // debounce counter per key
-static uint16_t key_hold_time[10] = {0};   // hold duration in 10ms ticks per key
-static uint8_t  key_pressed[10] = {0};     // current stable state per key
+typedef struct {
+    time_t_ t;
+    uint8_t enabled;
+    uint8_t ringing;
+} alarm_t;
 
-/************************** Edit state machine **************************/
-volatile uint8_t edit_mode = EDIT_NONE;    // current edit mode
-volatile uint8_t edit_field = 0;           // current field being edited
-static uint16_t  edit_timeout = 0;         // 10ms ticks since last action
-static uint8_t   edit_blink = 0;           // blink phase (toggled every ~300ms)
-static uint8_t   edit_blink_timer = 0;     // 100ms ticks for blink
+typedef enum {
+    FMT_LEFT,
+    FMT_RIGHT
+} format_t;
 
-/************************** Night mode **************************/
-volatile uint8_t night_mode = 0;           // 0=DAY, 1=NIGHT
+typedef enum {
+    KEY_NONE = 0,
+    KEY_FUNC,
+    KEY_SHIFT,
+    KEY_ADD,
+    KEY_SAVE,
+    KEY_DISP,
+    KEY_SPEED,
+    KEY_FORMAT,
+    KEY_EXT,
+    KEY_USER1,
+    KEY_USER2
+} key_code_t;
 
-/************************** Uptime **************************/
-volatile uint32_t uptime_seconds = 0;
+typedef enum {
+    KEV_NONE = 0,
+    KEV_DOWN,
+    KEV_UP,
+    KEV_LONG,
+    KEV_REPEAT
+} key_event_t;
 
-/************************** Protocol helpers **************************/
-static uint8_t uart_tx_activity = 0;
-static uint8_t suppress_key_event = 0;   // 1 = don't send *EVT:KEY (for *SET:KEY)
-static uint8_t beep_timer = 0;           // remaining beep duration in 100ms ticks
-static uint8_t beep_active = 0;          // 1 = beeper is sounding
+typedef enum {
+    STATE_BOOT,
+    STATE_CLOCK,
+    STATE_EDIT_DATE,
+    STATE_EDIT_TIME,
+    STATE_EDIT_ALARM,
+    STATE_SCROLL,
+    STATE_MSG_STATIC,
+    STATE_WEATHER
+} sys_state_t;
 
-/************************** Shared buffers (file-scope to save stack) **************************/
-static char cmd_parse_buf[64];     // command parsing buffer
-static char cmd_token_buf[32];     // reconstructed token
-static char cmd_params_buf[64];    // original-case params copy
+typedef enum {
+    KS_IDLE,
+    KS_DEBOUNCE_DOWN,
+    KS_PRESSED,
+    KS_LONG_PRESSED,
+    KS_DEBOUNCE_UP
+} ks_state_t;
 
-/************************** Utility functions **************************/
-void Delay_us(uint32_t us) {
-    uint32_t loops = us * (ui32SysClock / 1000000) / 3;
-    while (loops--) {
-        __NOP(); __NOP(); __NOP();
+typedef enum {
+    EF_NONE,
+    EF_YEAR,
+    EF_MONTH,
+    EF_DAT,
+    EF_HOUR,
+    EF_MINUTE,
+    EF_SECOND
+} edit_field_t;
+
+/* ================================================================
+ * 全局变量
+ * ================================================================ */
+volatile uint32_t g_tick_ms;
+volatile uint8_t  flag_5ms;
+volatile uint8_t  flag_10ms;
+volatile uint8_t  flag_100ms;
+volatile uint8_t  flag_1s;
+
+uint8_t  disp_buf[DISP_LEN];
+uint8_t  disp_dp[DISP_LEN];
+uint8_t  disp_blink_mask;
+uint8_t  disp_on;
+format_t g_format;
+
+char     scroll_buf[SCROLL_BUF_SIZE];
+uint8_t  scroll_len;
+uint8_t  scroll_dp_bitmap;
+int8_t   scroll_off;
+uint8_t  scroll_speed;
+uint8_t  scroll_dir;
+
+volatile time_t_ g_time;
+volatile date_t  g_date;
+volatile alarm_t g_alarm;
+volatile uint8_t g_alarm_beep_active;
+
+/* Multi-alarm 7-slot storage */
+volatile time_t_ g_alarm_slot[ALARM_SLOTS];
+volatile uint8_t g_alarm_slot_enabled_mask;
+
+/* Extra state */
+volatile uint8_t g_night_mode;
+volatile uint8_t g_disp_mode;
+volatile uint8_t g_scroll_speed_level;
+volatile uint8_t g_weather_age;
+volatile uint8_t g_suppress_key_evt;
+
+static key_event_t key_queue_evt[KEY_QUEUE_SIZE];
+static key_code_t  key_queue_code[KEY_QUEUE_SIZE];
+static volatile uint8_t key_queue_wr;
+static uint8_t          key_queue_rd;
+
+volatile char     uart_rx_buf[UART_RX_BUF_SIZE];
+volatile uint16_t uart_rx_head;
+volatile uint16_t uart_rx_tail;
+volatile uint8_t  rx_line_ready;
+char              cmd_line[LINE_MAX];
+volatile uint8_t  led_uart_tx_active;
+volatile uint8_t  led_uart_rx_active;
+
+volatile uint8_t g_led_override;
+volatile uint8_t g_led_value;
+
+sys_state_t g_state;
+uint8_t     g_edit_pos;
+uint32_t    g_last_activity_ms;
+uint8_t     g_mode_day;
+uint32_t    g_uptime_s;
+
+int8_t  g_weather_temp;
+char    g_weather_cond[4];
+uint8_t g_weather_valid;
+
+uint8_t  g_ntp_synced;
+uint32_t g_ntp_last_sync_ms;
+
+char    g_msg_text[33];
+uint8_t g_msg_len;
+uint8_t g_msg_active;
+uint32_t g_msg_end_ms;
+
+/* 按键状态机静态变量 */
+static ks_state_t    ks_state      = KS_IDLE;
+static uint8_t       ks_stable;
+static uint32_t      ks_change_time;
+static key_code_t    ks_held_key;
+static uint8_t       ks_user_prev;
+
+/* 编辑 FSM 静态变量 */
+static edit_field_t edit_field;
+static uint8_t      edit_modified;
+
+/* LED 静态变量 */
+static uint8_t led_pca9557_cache = 0xFF;
+
+/* 蜂鸣器静态变量 */
+static uint32_t beep_start_ms = 0;
+
+/* 远程蜂鸣（非阻塞） */
+static uint8_t  remote_beep_active = 0;
+static uint32_t remote_beep_end_ms = 0;
+
+/* 显示扫描静态变量 */
+static uint8_t  disp_cur_digit = 0;
+static uint8_t  disp_bit_mask  = 0x01;
+
+/* 时钟显示格式化辅助 */
+static void Clock_FormatDisplay(void);
+static void Report_LED(void);
+
+/* ================================================================ */
+uint32_t ui32SysClock;
+
+/* ================================================================
+ * 工具函数
+ * ================================================================ */
+uint8_t Tick_TimedOut(uint32_t start, uint32_t span_ms)
+{
+    return (g_tick_ms - start) >= span_ms;
+}
+
+static uint8_t cmd_match(const char *input, const char *prefix)
+{
+    while (*prefix) {
+        if (*input != *prefix) return 0;
+        input++;
+        prefix++;
+    }
+    return 1;
+}
+
+static const char *keycode_to_name(key_code_t code)
+{
+    switch (code) {
+        case KEY_FUNC:   return "FUNC";
+        case KEY_SHIFT:  return "SHIFT";
+        case KEY_ADD:    return "ADD";
+        case KEY_SAVE:   return "SAVE";
+        case KEY_DISP:   return "DISP";
+        case KEY_SPEED:  return "SPEED";
+        case KEY_FORMAT: return "FORMAT";
+        case KEY_EXT:    return "EXT";
+        case KEY_USER1:  return "USER1";
+        case KEY_USER2:  return "USER2";
+        default:         return "NONE";
     }
 }
 
-void Delay(uint32_t value) {
-    uint32_t ui32Loop;
-    for (ui32Loop = 0; ui32Loop < value; ui32Loop++) {};
+static uint8_t is_leap_year(uint16_t y)
+{
+    return ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0));
 }
 
-/************************** UART output helpers **************************/
-void UARTStringPut(uint8_t *cMessage) {
-    while (*cMessage != '\0')
-        UARTCharPut(UART0_BASE, *(cMessage++));
-}
+static const uint8_t days_in_month[] = {
+    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+};
 
-void UARTStringPutNonBlocking(const char *cMessage) {
-    while (*cMessage != '\0')
-        UARTCharPutNonBlocking(UART0_BASE, *(cMessage++));
-}
+static const char *DOW_NAMES[] = {"","MON","TUE","WED","THU","FRI","SAT","SUN"};
 
-void send_response(const char *msg) {
-    UARTStringPut((uint8_t *)msg);
-    uart_tx_activity = 1;
-}
-
-/************************** Abbreviation matching **************************/
-/**
- * Match input against a pattern with abbreviation support.
- * Uppercase chars in 'full' are mandatory; lowercase are optional.
- * Example: "MINute" matches "MIN", "MINU", "MINUT", "MINUTE" but not "MI".
- * Returns 1 on match, 0 otherwise.
- */
-int match_abbrev(const char *input, const char *full) {
+static uint8_t match_abbrev(const char *input, const char *full)
+{
     int i;
     int input_len = (int)strlen(input);
-
-    // Input must be a case-insensitive prefix of full
     for (i = 0; i < input_len && full[i]; i++) {
         if (toupper((unsigned char)input[i]) != toupper((unsigned char)full[i]))
             return 0;
     }
-    if (i < input_len) return 0;  // input longer than full → no match
-
-    // Input must cover all uppercase (mandatory) characters
+    if (i < input_len) return 0;
     int min_len = 0;
     for (i = 0; full[i]; i++) {
         if (isupper((unsigned char)full[i])) min_len = i + 1;
     }
-
     return input_len >= min_len;
 }
 
-/************************** LED management **************************/
-void led_update(void) {
-    // If *SET:LED took over, skip all auto-logic — just write led_byte as-is
-    if (led_takeover) {
-        SysTickIntDisable();
-        { volatile uint32_t _t=0; while (I2CMasterBusy(I2C0_BASE) && ++_t<100000) {}; }
-        I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
-        SysTickIntEnable();
-        return;
-    }
+/* ================================================================
+ * I2C 底层操作
+ * ================================================================ */
+static void I2C_WriteByte(uint8_t dev_addr, uint8_t reg, uint8_t data)
+{
+    while (I2CMasterBusy(I2C0_BASE)) {}
 
-    uint8_t out = led_byte;
+    I2CMasterSlaveAddrSet(I2C0_BASE, dev_addr, false);
+    I2CMasterDataPut(I2C0_BASE, reg);
+    I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
 
-    // Heartbeat blink: toggle every 500ms
-    if (led_heartbeat_timer >= 5) {
-        led_heartbeat_timer = 0;
-        if (out & LED_HEARTBEAT)
-            out &= ~LED_HEARTBEAT;
-        else
-            out |= LED_HEARTBEAT;
-    }
+    while (I2CMasterBusy(I2C0_BASE)) {}
 
-    // TX LED auto-off after ~300ms
-    if (uart_tx_timer > 0) {
-        uart_tx_timer--;
-        out |= LED_TX;
-    } else {
-        out &= ~LED_TX;
-    }
+    I2CMasterDataPut(I2C0_BASE, data);
+    I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_FINISH);
 
-    // RX LED auto-off after ~300ms
-    if (uart_rx_timer > 0) {
-        uart_rx_timer--;
-        out |= LED_RX;
-    } else {
-        out &= ~LED_RX;
-    }
-
-    // Night mode: only keep heartbeat LED; suppress all others
-    if (night_mode) {
-        out &= LED_HEARTBEAT;
-    } else {
-        // LED1 (ALARM): enabled=steady on, ringing=fast blink (toggle every 300ms)
-        if (alarm_ringing) {
-            // Fast blink: toggle via alarm_led_blink each 300ms tick
-            if (alarm_led_blink)
-                out |= LED_ALARM;
-            else
-                out &= ~LED_ALARM;
-        } else if (ALARM_CUR_ENABLED) {
-            out |= LED_ALARM;   // armed = steady on
-        } else {
-            out &= ~LED_ALARM;
-        }
-
-        // Edit LED follows edit_mode
-        if (edit_mode != EDIT_NONE)
-            out |= LED_EDIT;
-        else
-            out &= ~LED_EDIT;
-
-        // EXT key blink feedback (non-blocking, tick-counted here)
-        if (ext_led_blink > 0) {
-            out |= LED_EDIT;   // override EDIT LED on
-            ext_led_blink--;
-        }
-
-        // Weather LEDs per spec §11/§15
-        if (weather_code == 1 && weather_temp != -99)   // SUN
-            out |= LED_SUN;
-        else if (weather_code >= 4 && weather_temp != -99) // RAI/SNO
-            out |= LED_RAI_SNO;
-        else
-            out &= ~(LED_SUN | LED_RAI_SNO);
-
-        if (weather_temp >= 30)                       // >=30°C
-            out |= LED_HI_TEMP;
-        else
-            out &= ~LED_HI_TEMP;
-    }
-
-    // NTP synced: overlay on RX bit (LED4) — RX only blinks 300ms then goes dark
-    if (ntp_synced == 1)
-        out |= LED_RX;
-
-    led_byte = out;
-
-    // Write to PCA9557 with SysTick disabled to avoid I2C bus conflict
-    // (SysTick ISR also writes to TCA6424 via I2C0 at 1kHz)
-    SysTickIntDisable();
-    { volatile uint32_t _t=0; while (I2CMasterBusy(I2C0_BASE) && ++_t<100000) {}; }  // drain ISR tx
-    I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
-    SysTickIntEnable();
+    while (I2CMasterBusy(I2C0_BASE)) {}
 }
 
-/************************** Beeper control **************************/
-// PS1720P02 (C96061) passive piezo buzzer on PN1.
-// 2kHz square wave via GPIO toggle in Timer0A ISR (4kHz → toggle → 2kHz output).
+/**
+ * I2C 读一个字节。修复: 统一使用 I2CMasterBusy()
+ */
+static uint8_t I2C_ReadByte(uint8_t dev_addr, uint8_t reg)
+{
+    while (I2CMasterBusy(I2C0_BASE)) {}
 
-void Beeper_Timer_Init(void);
+    I2CMasterSlaveAddrSet(I2C0_BASE, dev_addr, false);
+    I2CMasterDataPut(I2C0_BASE, reg);
+    I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_SEND);
 
-void beep_on(void) {
-    if (night_mode) return;
-    beep_active = 1;  // ISR sees this and starts toggling PN1
+    while (I2CMasterBusy(I2C0_BASE)) {}
+
+    I2CMasterSlaveAddrSet(I2C0_BASE, dev_addr, true);
+    I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);
+
+    while (I2CMasterBusy(I2C0_BASE)) {}
+
+    return (uint8_t)I2CMasterDataGet(I2C0_BASE);
+}
+
+/* ================================================================
+ * 按键读取
+ * ================================================================ */
+static uint8_t Keys_ReadRaw(void)
+{
+    uint8_t val = I2C_ReadByte(TCA6424_I2CADDR, TCA6424_INPUT_PORT0);
+    return ~val;
+}
+
+static uint8_t Keys_ReadUser(void)
+{
+    uint32_t pj;
+    uint8_t result = 0;
+    pj = GPIOPinRead(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+    if (!(pj & GPIO_PIN_0)) result |= 0x01;
+    if (!(pj & GPIO_PIN_1)) result |= 0x02;
+    return result;
+}
+
+static key_code_t raw_to_keycode(uint8_t raw)
+{
+    if (raw & 0x01) return KEY_FUNC;
+    if (raw & 0x02) return KEY_SHIFT;
+    if (raw & 0x04) return KEY_ADD;
+    if (raw & 0x08) return KEY_SAVE;
+    if (raw & 0x10) return KEY_DISP;
+    if (raw & 0x20) return KEY_SPEED;
+    if (raw & 0x40) return KEY_FORMAT;
+    if (raw & 0x80) return KEY_EXT;
+    return KEY_NONE;
+}
+
+/* ================================================================
+ * 按键事件队列
+ * ================================================================ */
+static void KeyQueue_Push(key_code_t code, key_event_t evt)
+{
+    uint8_t next = (key_queue_wr + 1) % KEY_QUEUE_SIZE;
+    if (next == key_queue_rd) return;
+    key_queue_code[key_queue_wr] = code;
+    key_queue_evt[key_queue_wr]  = evt;
+    key_queue_wr = next;
+}
+
+key_event_t Key_GetEvent(key_code_t *out)
+{
+    key_event_t evt;
+    if (key_queue_rd == key_queue_wr) return KEV_NONE;
+    *out = key_queue_code[key_queue_rd];
+    evt = key_queue_evt[key_queue_rd];
+    key_queue_rd = (key_queue_rd + 1) % KEY_QUEUE_SIZE;
+    return evt;
+}
+
+/* ================================================================
+ * 按键扫描（每 10ms 调用）
+ * ================================================================ */
+void Key_Scan(void)
+{
+    uint8_t tca_raw;
+    uint8_t user_raw;
+    uint8_t all_raw;
+
+    tca_raw  = Keys_ReadRaw();
+    user_raw = Keys_ReadUser();
+    all_raw = tca_raw;
+
+    switch (ks_state) {
+
+    case KS_IDLE:
+        if (all_raw != 0) {
+            ks_state = KS_DEBOUNCE_DOWN;
+            ks_change_time = g_tick_ms;
+        }
+        break;
+
+    case KS_DEBOUNCE_DOWN:
+        if (all_raw == 0) {
+            ks_state = KS_IDLE;
+        } else if ((g_tick_ms - ks_change_time) >= KEY_DEBOUNCE_MS) {
+            ks_stable     = all_raw;
+            ks_held_key   = raw_to_keycode(ks_stable);
+            ks_state      = KS_PRESSED;
+            ks_change_time = g_tick_ms;
+            if (ks_held_key != KEY_NONE) {
+                KeyQueue_Push(ks_held_key, KEV_DOWN);
+            }
+        }
+        break;
+
+    case KS_PRESSED:
+        if (all_raw != ks_stable) {
+            if (all_raw == 0) {
+                KeyQueue_Push(ks_held_key, KEV_UP);
+                ks_state = KS_IDLE;
+            } else {
+                KeyQueue_Push(ks_held_key, KEV_UP);
+                ks_state = KS_DEBOUNCE_DOWN;
+                ks_change_time = g_tick_ms;
+            }
+        } else if ((g_tick_ms - ks_change_time) >= KEY_LONG_MS) {
+            KeyQueue_Push(ks_held_key, KEV_LONG);
+            ks_state = KS_LONG_PRESSED;
+            ks_change_time = g_tick_ms;
+        }
+        break;
+
+    case KS_LONG_PRESSED:
+        if (all_raw != ks_stable) {
+            if (all_raw == 0) {
+                KeyQueue_Push(ks_held_key, KEV_UP);
+                ks_state = KS_IDLE;
+            }
+        } else if ((g_tick_ms - ks_change_time) >= KEY_REPEAT_MS) {
+            KeyQueue_Push(ks_held_key, KEV_REPEAT);
+            ks_change_time = g_tick_ms;
+        }
+        break;
+
+    case KS_DEBOUNCE_UP:
+        if (all_raw == 0 && (g_tick_ms - ks_change_time) >= KEY_DEBOUNCE_MS) {
+            ks_state = KS_IDLE;
+        }
+        break;
+    }
+
+    /* USER1 / USER2 处理 */
+    if (user_raw != ks_user_prev) {
+        if ((user_raw & 0x01) && !(ks_user_prev & 0x01)) {
+            KeyQueue_Push(KEY_USER1, KEV_DOWN);
+        }
+        if (!(user_raw & 0x01) && (ks_user_prev & 0x01)) {
+            KeyQueue_Push(KEY_USER1, KEV_UP);
+        }
+        if ((user_raw & 0x02) && !(ks_user_prev & 0x02)) {
+            KeyQueue_Push(KEY_USER2, KEV_DOWN);
+        }
+        if (!(user_raw & 0x02) && (ks_user_prev & 0x02)) {
+            KeyQueue_Push(KEY_USER2, KEV_UP);
+        }
+        ks_user_prev = user_raw;
+    }
+}
+
+/* ================================================================
+ * Beeper Timer (PN1, 2kHz via Timer0A ISR)
+ * ================================================================ */
+void Beeper_Init(void)
+{
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0)) {}
+    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
+    TimerLoadSet(TIMER0_BASE, TIMER_A, ui32SysClock / 4000);
+    IntEnable(INT_TIMER0A_TM4C123);
+    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
     TimerEnable(TIMER0_BASE, TIMER_A);
 }
 
-void beep_off(void) {
-    beep_active = 0;  // ISR sees this and stops toggling
-    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);  // pin guaranteed LOW
-}
-
-/************************** Alarm state machine **************************/
-void alarm_check(void) {
-    if (alarm_snooze) return;
-
-    // Compute slot index ONCE — macros re-evaluate (day_of_week - 1) each time
-    uint8_t idx = day_of_week - 1;
-    if (idx >= ALARM_SLOTS) return;
-    if (!(alarm_enabled_mask & (1 << idx))) return;
-
-    // Check if current time matches today's alarm time
-    if (!alarm_ringing &&
-        hour == alarm_hour[idx] &&
-        minute == alarm_minute[idx] &&
-        second == alarm_second[idx]) {
-        // Start alarm
-        alarm_ringing = 1;
-        alarm_beep_phase = 0;
-        alarm_beep_timer = 0;
-        alarm_total_timer = 0;
-        send_event_alarm(1);
-    }
-
-    // Alarm beep pattern: on-200ms, off-200ms, on-200ms, off-200ms...
-    if (alarm_ringing) {
-        alarm_beep_timer++;
-        alarm_total_timer++;
-
-        // Auto-stop after 10 seconds (100 * 100ms)
-        if (alarm_total_timer >= 100) {
-            alarm_stop();
-            return;
-        }
-
-        // Beep pattern: 2 ticks on, 2 ticks off (200ms each)
-        switch (alarm_beep_phase) {
-            case 0:  // off before first beep
-                beep_off();
-                if (alarm_beep_timer >= 2) {
-                    alarm_beep_phase = 1;
-                    alarm_beep_timer = 0;
-                }
-                break;
-            case 1:  // beep on
-                beep_on();
-                if (alarm_beep_timer >= 2) {
-                    alarm_beep_phase = 2;
-                    alarm_beep_timer = 0;
-                }
-                break;
-            case 2:  // off between beeps
-                beep_off();
-                if (alarm_beep_timer >= 2) {
-                    alarm_beep_phase = 3;
-                    alarm_beep_timer = 0;
-                }
-                break;
-            case 3:  // second beep on
-                beep_on();
-                if (alarm_beep_timer >= 2) {
-                    alarm_beep_phase = 0;
-                    alarm_beep_timer = 0;
-                    // Pattern repeats until alarm_total_timer reaches 100 (10s)
-                }
-                break;
-        }
+void TIMER0A_Handler(void)
+{
+    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+    if (g_alarm_beep_active || remote_beep_active) {
+        static uint8_t phase = 0;
+        phase = !phase;
+        if (phase)
+            GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, GPIO_PIN_1);
+        else
+            GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0);
     }
 }
 
-void alarm_stop(void) {
-    alarm_ringing = 0;
-    alarm_beep_phase = 0;
-    alarm_beep_timer = 0;
-    alarm_total_timer = 0;
-    beep_off();
-    send_event_alarm(0);
-}
+/* ================================================================
+ * SysTick
+ * ================================================================ */
+void SysTick_Handler(void)
+{
+    static uint32_t cnt_5ms   = 0;
+    static uint32_t cnt_10ms  = 0;
+    static uint32_t cnt_100ms = 0;
+    static uint32_t cnt_1s    = 0;
 
-/************************** Character to 7-segment conversion **************************/
-uint8_t CharToSeg7(char c) {
-    if (c >= '0' && c <= '9') {
-        return seg7[c - '0'];
-    } else if (c >= 'A' && c <= 'Z') {
-        switch (c) {
-            case 'A': return 0x77; case 'B': return 0x7C; case 'C': return 0x39;
-            case 'D': return 0x5E; case 'E': return 0x79; case 'F': return 0x71;
-            case 'G': return 0x3D; case 'H': return 0x76; case 'I': return 0x30;
-            case 'J': return 0x1E; case 'K': return 0x7A; case 'L': return 0x3C;
-            case 'M': return 0x55; case 'N': return 0x37; case 'O': return 0x3F;
-            case 'P': return 0x73; case 'Q': return 0x67; case 'R': return 0x70;
-            case 'S': return 0x6D; case 'T': return 0x78; case 'U': return 0x3E;
-            case 'V': return 0x7E; case 'W': return 0x6A; case 'X': return 0x36;
-            case 'Y': return 0x6E; case 'Z': return 0x49;
-            default: return 0x00;
-        }
-    } else if (c >= 'a' && c <= 'z') {
-        switch (c) {
-            case 'c': return 0x58;  // d,e,g
-            case 'e': return 0x7B;  // a,b,d,e,f,g
-            case 'h': return 0x74;  // c,e,f,g
-            case 'i': return 0x10;  // e
-            case 'j': return 0x0E;  // b,c,d
-            case 'l': return 0x38;  // d,e,f
-            case 'n': return 0x54;  // c,e,g
-            case 'o': return 0x5C;  // c,d,e,g
-            case 'r': return 0x50;  // e,g
-            case 'u': return 0x1C;  // c,d,e
-            default: return CharToSeg7(c - 'a' + 'A');
-        }
-    } else if (c == '.') {
-        return DP_SEG;
-    } else if (c == '-') {
-        return 0x40;
-    } else {
-        return 0x00;  // blank for unknown characters
-    }
-}
+    g_tick_ms++;
 
-/************************** ShowString (blocking, for boot) **************************/
-void ShowString(const char *str, uint32_t duration, uint8_t led_state) {
-    int j, k;
-    uint8_t seg_data[8];
+    if (++cnt_5ms >= 5)   { cnt_5ms = 0;   flag_5ms   = 1; }
+    if (++cnt_10ms >= 10)  { cnt_10ms = 0;  flag_10ms  = 1; }
+    if (++cnt_100ms >= 100) { cnt_100ms = 0; flag_100ms = 1; }
+    if (++cnt_1s >= 1000)   { cnt_1s = 0;    flag_1s    = 1; }
 
-    for (j = 0; j < 8; j++) {
-        if (str[j] == '\0') break;
-        seg_data[j] = CharToSeg7(str[j]);
-    }
-    for (; j < 8; j++) {
-        seg_data[j] = 0x00;
-    }
-
-    for (k = 0; k < duration; k++) {
-        for (j = 0; j < 8; j++) {
-            result = I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT2, 0x00);
-            Delay_us(10);
-
-            result = I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT1, seg_data[j]);
-            Delay_us(10);
-
-            uint8_t bit_pos = SCAN_REVERSE ? (7 - j) : j;
-            result = I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT2, 1 << bit_pos);
-
-            result = I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_state);
-
-            Delay_us(100 * BRIGHTNESS);
-        }
-    }
-}
-
-/************************** Boot sequence **************************/
-void Boot_Sequence(void) {
-    SysTickIntDisable();
-
-    // 1. All segments + LED full bright → full off
-    ShowString("88888888", BOOT_FULL_BRIGHT, 0xFF);
-    ShowString("        ", BOOT_FULL_OFF, 0x00);
-
-    // 2. Student ID (blink 1 time)
-    ShowString(STUDENT_ID, BOOT_STUDENT_ID / 2, 0xFF);
-    ShowString("        ", 50, 0x00);
-    ShowString(STUDENT_ID, BOOT_STUDENT_ID / 2, 0xFF);
-
-    // 3. Blank
-    ShowString("        ", BOOT_FULL_OFF, 0x00);
-
-    // 4. Name (blink 1 time)
-    ShowString(STUDENT_NAME, BOOT_NAME / 2, 0xFF);
-    ShowString("        ", 50, 0x00);
-    ShowString(STUDENT_NAME, BOOT_NAME / 2, 0xFF);
-
-    // 5. Blank
-    ShowString("        ", BOOT_FULL_OFF, 0x00);
-
-    // 6. Software version
-    ShowString(SOFTWARE_VERSION, BOOT_VERSION, 0x00);
-
-    // 7. Blank
-    ShowString("        ", 50, 0x00);
-
-    // Reset display buffer
-    memset(disp_buf, 0, sizeof(disp_buf));
-    memset(dp_buf, 0, sizeof(dp_buf));
-    memset(disp_chars, ' ', 8);
-
-    SysTickIntEnable();
-}
-
-/************************** Time/date functions **************************/
-uint8_t is_leap_year(uint16_t year) {
-    return ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0));
-}
-
-uint8_t get_days_in_month(uint16_t year, uint8_t month) {
-    static const uint8_t days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    if (month == 2 && is_leap_year(year)) return 29;
-    return days[month - 1];
-}
-
-void update_time(void) {
-    second++;
-
-    if (second >= 60) {
-        second = 0;
-        minute++;
-
-        if (minute >= 60) {
-            minute = 0;
-            hour++;
-
-            if (hour >= 24) {
-                hour = 0;
-                day++;
-
-                if (day > get_days_in_month(year, month)) {
-                    day = 1;
-                    month++;
-
-                    if (month > 12) {
-                        month = 1;
-                        year++;
-                    }
-                }
-                // Advance day-of-week on midnight rollover
-                day_of_week++;
-                if (day_of_week > DOW_SUN) day_of_week = DOW_MON;
-            }
-        }
-    }
-}
-
-/************************** Display update **************************/
-void update_display(void) {
-    char str[9] = "        ";
-    int j;
-
-    if (!disp_on) {
-        // Display off: all blanks
-        for (j = 0; j < 8; j++) {
-            disp_buf[j] = 0x00;
-            dp_buf[j] = 0;
-            disp_chars[j] = ' ';
-        }
-        return;
-    }
-
-    // In night mode, only show HH:MM (4 chars), rest blank
-    if (night_mode) {
-        sprintf(str, "%02d%02d    ", hour, minute);
-        memset(dp_buf, 0, sizeof(dp_buf));
-        dp_buf[1] = 1;  // HH.MM separator
-    }
-    // Scroll message active → show scrolling text
-    else if (scroll_active && scroll_len > 0) {
-        // Build 8-char window into scroll message
-        uint8_t pos = scroll_pos;
-        for (j = 0; j < 8; j++) {
-            // wrap: if pos+j >= len, pad with space or wrap from start
-            if (pos + j < scroll_len) {
-                str[j] = scroll_msg[pos + j];
-            } else if (pos + j < scroll_len + 8) {
-                str[j] = ' ';  // pad with space after message
-            } else {
-                // wrap-around: show beginning of message
-                uint8_t wrap_idx = (pos + j - scroll_len - 8) % scroll_len;
-                str[j] = scroll_msg[wrap_idx];
-            }
-        }
-        memset(dp_buf, 0, sizeof(dp_buf));
-    }
-    // Normal time/date display
-    else if (edit_mode != EDIT_NONE) {
-        // Show edit values
-        memset(dp_buf, 0, sizeof(dp_buf));
-        if (edit_mode == EDIT_DATE) {
-            sprintf(str, "%04d%02d%02d", year, month, day);
-            dp_buf[3] = 1;  // YYYY.MM
-            dp_buf[5] = 1;  // MM.DD
-        } else if (edit_mode == EDIT_TIME) {
-            sprintf(str, "%02d%02d%02d  ", hour, minute, second);
-            dp_buf[1] = 1;  // HH.MM
-            dp_buf[3] = 1;  // MM.SS
-        } else if (edit_mode == EDIT_ALARM) {
-            sprintf(str, "%02d%02d%02d  ", ALARM_CUR_HOUR, ALARM_CUR_MIN, ALARM_CUR_SEC);
-            dp_buf[1] = 1;
-            dp_buf[3] = 1;
-        }
-    }
-    // Normal time/date display
-    else {
-        memset(dp_buf, 0, sizeof(dp_buf));
-
-        switch (disp_mode) {
-            case DISP_MODE_TIME:
-                sprintf(str, "%02d%02d%02d  ", hour, minute, second);
-                dp_buf[1] = 1;  // HH.MM
-                dp_buf[3] = 1;  // MM.SS
-                break;
-
-            case DISP_MODE_DATE_SHORT:
-                sprintf(str, "%02d%02d%02d  ", year % 100, month, day);
-                dp_buf[1] = 1;
-                dp_buf[3] = 1;
-                break;
-
-            case DISP_MODE_DATE_LONG:
-                sprintf(str, "%04d%02d%02d", year, month, day);
-                dp_buf[3] = 1;  // YYYY.MM
-                dp_buf[5] = 1;  // MM.DD
-                break;
-        }
-    }
-
-    // FORMAT RIGHT: reverse display string and dp_buf together.
-    // Dots are mirrored then shifted right by 1 (spec §7: "下一位").
-    if (format_direction == 1) {
-        char rev[9];
-        uint8_t rev_dp[8] = {0};
-        for (j = 0; j < 8; j++) {
-            rev[j] = str[7 - j];
-        }
-        for (j = 0; j < 7; j++) {
-            // mirror dp then shift right by 1:
-            // dp at original pos k → mirrored to pos 7-k → shifted to pos 6-k
-            rev_dp[j] = dp_buf[6 - j];
-        }
-        memcpy(str, rev, 8);
-        memcpy(dp_buf, rev_dp, 8);
-    }
-
-    // Store ASCII chars for *EVT:DISP
-    memcpy(disp_chars, str, 8);
-
-    // Edit mode blinking: blank the current field during blink-on phase
-    // (local behavior per §3.5, not mirrored to PC per protocol spec)
-    if (edit_mode != EDIT_NONE && edit_blink) {
-        if (edit_mode == EDIT_DATE) {
-            // Edit DATE always shows YYYY.MMDD — year takes 4 digits
-            uint8_t start, count;
-            if (edit_field == EDIT_FIELD_YEAR) {
-                start = 0; count = 4;
-            } else if (edit_field == EDIT_FIELD_MONTH) {
-                start = 4; count = 2;
-            } else {
-                start = 6; count = 2;
-            }
-            for (j = start; j < start + count && j < 8; j++) {
-                str[j] = ' ';
-            }
-        } else if (edit_mode == EDIT_TIME || edit_mode == EDIT_ALARM) {
-            uint8_t start = (edit_field == EDIT_FIELD_HOUR) ? 0 :
-                            (edit_field == EDIT_FIELD_MINUTE) ? 2 : 4;
-            uint8_t count = 2;
-            for (j = start; j < start + count && j < 8; j++) {
-                str[j] = ' ';
-            }
-        }
-    }
-
-    // Convert to segment patterns
-    for (j = 0; j < 8; j++) {
-        disp_buf[j] = CharToSeg7(str[j]);
-        if (dp_buf[j] && SEPARATOR_STYLE == 0) {
-            disp_buf[j] |= DP_SEG;
-        }
-    }
-}
-
-/************************** Event reporting (S800 → PC) **************************/
-void send_event_disp(void) {
-    char buf[64];
-    uint8_t dp_hex = 0;
-    int j;
-
-    // Build dp hex: MSB = digit 0, LSB = digit 7
-    for (j = 0; j < 8; j++) {
-        if (dp_buf[j]) dp_hex |= (1 << (7 - j));
-    }
-
-    // Build character string (replace space with '_' per protocol)
-    char safe_chars[9];
-    for (j = 0; j < 8; j++) {
-        safe_chars[j] = (disp_chars[j] == ' ') ? '_' : disp_chars[j];
-    }
-    safe_chars[8] = '\0';
-
-    sprintf(buf, "*EVT:DISP %s %02X\r\n", safe_chars, dp_hex);
-    send_response(buf);
-}
-
-void send_event_led(void) {
-    char buf[32];
-    sprintf(buf, "*EVT:LED %02X\r\n", led_byte);
-    send_response(buf);
-}
-
-void send_event_key(uint8_t key_idx) {
-    char buf[32];
-    if (key_idx < NUM_KEYS) {
-        sprintf(buf, "*EVT:KEY %s\r\n", KEY_NAMES[key_idx]);
-        send_response(buf);
-    }
-}
-
-void send_event_alarm(uint8_t on) {
-    if (on)
-        send_response("*EVT:ALARM\r\n");
+    /* USER1 indicator: PN0 mirrors PJ0 */
+    if (GPIOPinRead(GPIO_PORTJ_BASE, GPIO_PIN_0) == 0)
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0);
     else
-        send_response("*EVT:ALARM_OFF\r\n");
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, 0);
 }
 
-void send_event_edit(const char *type, const char *value) {
-    char buf[64];
-    sprintf(buf, "*EVT:EDIT %s %s\r\n", type, value);
-    send_response(buf);
-}
-
-void send_event_mode(const char *state) {
-    char buf[32];
-    sprintf(buf, "*EVT:MODE %s\r\n", state);
-    send_response(buf);
-}
-
-/************************** Key scanning **************************/
-void key_scan(void) {
-    uint8_t i2c_keys, gpio_keys;
-    uint16_t raw_state;
-    int i;
-
-    // Read I2C keys from TCA6424 Port0 (8 keys, active low)
-    SysTickIntDisable();
-    { volatile uint32_t _t=0; while (I2CMasterBusy(I2C0_BASE) && ++_t<100000) {}; }  // drain ISR's in-flight transaction
-    i2c_keys = I2C0_ReadByte(TCA6424_I2CADDR, TCA6424_INPUT_PORT0);
-    SysTickIntEnable();
-
-    // Read GPIO keys: PJ0=USER1, PJ1=USER2 (active low with pull-up)
-    gpio_keys = GPIOPinRead(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1);
-
-    // Build combined 10-bit raw state (0-7=I2C, 8=USER1, 9=USER2)
-    // Both I2C and GPIO are active-low (0=press). Invert so 1=press.
-    raw_state = (uint16_t)(~i2c_keys) & 0xFF;         // bits 0-7, inverted: 1=press
-    if (!(gpio_keys & GPIO_PIN_0)) raw_state |= (1U << 8);  // USER1
-    if (!(gpio_keys & GPIO_PIN_1)) raw_state |= (1U << 9);  // USER2
-
-    // If in alarm ringing, check FUNC (key index 1) for quick stop
-    if (alarm_ringing) {
-        uint8_t func_pressed = !(i2c_keys & 0x02);  // FUNC = bit 1
-        static uint8_t func_prev = 0;
-        if (func_pressed && !func_prev) {
-            alarm_stop();
-            func_prev = 1;
-            return;  // don't process other keys during alarm stop
-        }
-        func_prev = func_pressed;
-        // During alarm, don't process other key actions
-        // (alarm ringing blocks edit mode entry per §3.4)
-        return;
-    }
-
-    // Debounce: each key must be stable for 2 consecutive scans (20ms)
-    for (i = 0; i < NUM_KEYS; i++) {
-        uint8_t is_pressed = (raw_state >> i) & 0x01;
-
-        if (is_pressed) {
-            if (key_debounce[i] < 3) key_debounce[i]++;
-            if (key_debounce[i] == 2 && !key_pressed[i]) {
-                // Key just pressed
-                key_pressed[i] = 1;
-                key_hold_time[i] = 0;
-                key_action(i, 0);  // short press action
-            }
-        } else {
-            if (key_debounce[i] > 0) key_debounce[i]--;
-            if (key_debounce[i] == 0 && key_pressed[i]) {
-                // Key just released
-                key_pressed[i] = 0;
-            }
-        }
-
-        // Track hold time for long press detection
-        if (key_pressed[i]) {
-            key_hold_time[i]++;
-            // Long press: ~1 second (100 * 10ms)
-            if (key_hold_time[i] == 100) {
-                key_action(i, 1);  // long press action
-            }
-        }
-    }
-}
-
-/************************** Key action dispatch **************************/
-void key_action(uint8_t key_idx, uint8_t long_press) {
-    // key_idx: 0=ADD,1=FUNC,2=SHIFT,3=SPEED,4=SAVE,5=FORMAT,6=DISP,7=EXT,8=USER1,9=USER2
-
-    // Send *EVT:KEY to PC for physical keys only (not *SET:KEY simulated)
-    if (!suppress_key_event) {
-        send_event_key(key_idx);
-    }
-
-    switch (key_idx) {
-        case 0: // ADD
-            if (edit_mode != EDIT_NONE) {
-                edit_timeout = 0;
-                // Increment current field
-                if (edit_mode == EDIT_DATE) {
-                    if (edit_field == EDIT_FIELD_YEAR) {
-                        year++; if (year > 2099) year = 2025;
-                    } else if (edit_field == EDIT_FIELD_MONTH) {
-                        month++; if (month > 12) month = 1;
-                    } else if (edit_field == EDIT_FIELD_DAY) {
-                        day++; if (day > get_days_in_month(year, month)) day = 1;
-                    }
-                } else if (edit_mode == EDIT_TIME) {
-                    if (edit_field == EDIT_FIELD_HOUR) {
-                        hour++; if (hour > 23) hour = 0;
-                    } else if (edit_field == EDIT_FIELD_MINUTE) {
-                        minute++; if (minute > 59) minute = 0;
-                    } else if (edit_field == EDIT_FIELD_SECOND) {
-                        second++; if (second > 59) second = 0;
-                    }
-                } else if (edit_mode == EDIT_ALARM) {
-                    if (edit_field == EDIT_FIELD_HOUR) {
-                        ALARM_CUR_HOUR++; if (ALARM_CUR_HOUR > 23) ALARM_CUR_HOUR = 0;
-                    } else if (edit_field == EDIT_FIELD_MINUTE) {
-                        ALARM_CUR_MIN++; if (ALARM_CUR_MIN > 59) ALARM_CUR_MIN = 0;
-                    } else if (edit_field == EDIT_FIELD_SECOND) {
-                        ALARM_CUR_SEC++; if (ALARM_CUR_SEC > 59) ALARM_CUR_SEC = 0;
-                    }
-                }
-                update_display();
-            }
-            if (long_press) {
-                // Long ADD: rapid add at ~5Hz
-                // Handled by key_hold_time repeat
-            }
-            break;
-
-        case 1: // FUNC
-            if (alarm_ringing) {
-                alarm_stop();  // stop alarm immediately
-                break;
-            }
-            if (long_press) {
-                // Long FUNC = save and exit
-                if (edit_mode != EDIT_NONE) {
-                    edit_exit(1);
-                }
-            } else {
-                // Short FUNC: cycle edit mode in a loop
-                if (edit_mode == EDIT_NONE) {
-                    edit_enter(EDIT_DATE);
-                } else if (edit_mode == EDIT_DATE) {
-                    edit_enter(EDIT_TIME);
-                } else if (edit_mode == EDIT_TIME) {
-                    edit_enter(EDIT_ALARM);
-                } else {
-                    // EDIT_ALARM: loop back to DATE
-                    edit_enter(EDIT_DATE);
-                }
-            }
-            break;
-
-        case 2: // SHIFT
-            if (edit_mode != EDIT_NONE) {
-                edit_timeout = 0;
-                edit_field = (edit_field + 1) % 3;
-            }
-            break;
-
-        case 3: // SPEED
-            scroll_speed_level = !scroll_speed_level;  // toggle speed
-            break;
-
-        case 4: // SAVE
-            edit_exit(1);  // save and exit
-            break;
-
-        case 5: // FORMAT
-            format_direction = !format_direction;  // toggle LEFT/RIGHT
-            scroll_pos = 0;  // reset scroll
-            update_display();
-            break;
-
-        case 6: // DISP
-            disp_mode++;
-            if (disp_mode > DISP_MODE_DATE_LONG) disp_mode = DISP_MODE_TIME;
-            scroll_active = 0;  // exit scroll mode
-            update_display();
-            break;
-
-        case 7: // EXT — toggle alarm enable/disable for current day
-            if (ALARM_CUR_ENABLED) {
-                ALARM_SET_DISABLED;
-            } else {
-                ALARM_SET_ENABLED;
-            }
-            if (ALARM_CUR_ENABLED) {
-                send_response("*EVT:ALARM:SET ON\r\n");
-            } else {
-                alarm_ringing = 0;
-                beep_off();
-                send_response("*EVT:ALARM:SET OFF\r\n");
-            }
-            // Non-blocking visual confirm: trigger LED blink via 100ms tick timer.
-            // No Delay() — the 2-tick timer avoids blocking the main loop and
-            // prevents UART RX FIFO overflow during continuous command testing.
-            ext_led_blink = 3;  // 3 * 100ms ticks: light on for ~300ms
-            break;
-
-        case 8: // USER1 — NTP sync (PC handles via *EVT:KEY USER1)
-            if (!suppress_key_event) send_event_key(8);
-            break;
-
-        case 9: // USER2 — short weather display
-            if (weather_temp != -99) {
-                char wbuf[33];
-                const char *wname[] = {"---", "SUN", "CLD", "OVC", "RAI", "SNO", "FOG"};
-                const char *wn = (weather_code <= 6) ? wname[weather_code] : "---";
-                if (weather_temp >= 0)
-                    sprintf(wbuf, "%2d C %s", weather_temp, wn);
-                else
-                    sprintf(wbuf, "%3dC %s", weather_temp, wn);
-                cmd_set_msg(wbuf);
-            } else {
-                cmd_set_msg("-- C ---");
-            }
-            if (!suppress_key_event) send_event_key(9);
-            break;
-    }
-}
-
-/************************** Edit state machine **************************/
-// Backup copies for cancel (restore original values)
-static uint8_t  backup_hour, backup_minute, backup_second;
-static uint16_t backup_year;
-static uint8_t  backup_month, backup_day;
-static uint8_t  backup_alarm_hour, backup_alarm_minute, backup_alarm_second;
-static uint8_t  backup_alarm_enabled;
-
-void edit_enter(uint8_t mode) {
-    // Backup current values before entering edit mode
-    backup_hour = hour; backup_minute = minute; backup_second = second;
-    backup_year = year; backup_month = month; backup_day = day;
-    backup_alarm_hour = ALARM_CUR_HOUR; backup_alarm_minute = ALARM_CUR_MIN;
-    backup_alarm_second = ALARM_CUR_SEC;
-    backup_alarm_enabled = ALARM_CUR_ENABLED ? 1 : 0;
-
-    edit_mode = mode;
-    edit_field = 0;
-    edit_timeout = 0;
-    edit_blink = 0;
-    edit_blink_timer = 0;
-    update_display();
-}
-
-void edit_exit(uint8_t save) {
-    if (save && edit_mode != EDIT_NONE) {
-        // Report edit save event
-        char value[16];
-        if (edit_mode == EDIT_DATE) {
-            sprintf(value, "%04d.%02d.%02d", year, month, day);
-            send_event_edit("DATE", value);
-        } else if (edit_mode == EDIT_TIME) {
-            sprintf(value, "%02d.%02d.%02d", hour, minute, second);
-            send_event_edit("TIME", value);
-        } else if (edit_mode == EDIT_ALARM) {
-            sprintf(value, "%02d.%02d.%02d", ALARM_CUR_HOUR, ALARM_CUR_MIN, ALARM_CUR_SEC);
-            send_event_edit("ALARM", value);
-        }
-    } else if (edit_mode != EDIT_NONE) {
-        // Cancel: restore original values (only if actually in edit mode)
-        hour = backup_hour; minute = backup_minute; second = backup_second;
-        year = backup_year; month = backup_month; day = backup_day;
-        ALARM_CUR_HOUR = backup_alarm_hour; ALARM_CUR_MIN = backup_alarm_minute;
-        ALARM_CUR_SEC = backup_alarm_second;
-        if (backup_alarm_enabled) ALARM_SET_ENABLED; else ALARM_SET_DISABLED;
-    }
-
-    edit_mode = EDIT_NONE;
-    edit_field = 0;
-    edit_timeout = 0;
-    edit_blink = 0;
-    update_display();
-}
-
-void edit_tick(void) {
-    if (edit_mode == EDIT_NONE) return;
-
-    // 5-second timeout: auto-exit without save
-    edit_timeout++;
-    if (edit_timeout >= 500) {  // 500 * 10ms = 5s
-        edit_exit(0);  // cancel
-    }
-    // Blink is handled in the 100ms loop via edit_blink_timer
-}
-
-/************************** Command handlers **************************/
-
-// *RST [DATE] [YEAR] [MONTH] [DATE]
-// Reset clock/date/alarm to defaults, FORMAT=LEFT
-void cmd_rst(const char *params) {
-    // Parse optional parameters
-    char buf[64];
-    strncpy(buf, params, 64);
-    buf[63] = '\0';
-
-    // Uppercase for matching
-    char *p = buf;
-    while (*p) { *p = toupper((unsigned char)*p); p++; }
-
-    // Default reset values
-    uint8_t reset_clock = 1, reset_date = 1, reset_alarm = 1;
-
-    // Check if specific sub-commands are given
-    if (buf[0] != '\0') {
-        reset_clock = reset_date = reset_alarm = 0;  // selective reset
-
-        p = buf;
-        while (*p) {
-            while (*p == ' ' || *p == '\t') p++;
-            if (*p == '\0') break;
-
-            // Extract token
-            char *token = p;
-            while (*p && *p != ' ' && *p != '\t') p++;
-            char saved = *p;
-            *p = '\0';
-
-            if (match_abbrev(token, "DATE"))     reset_date = 1;
-            else if (match_abbrev(token, "YEAR"))  reset_date = 1;
-            else if (match_abbrev(token, "MONTH")) reset_date = 1;
-            else if (match_abbrev(token, "TIME"))   reset_clock = 1;
-            else if (match_abbrev(token, "ALARM"))  reset_alarm = 1;
-            else {
-                // Unknown parameter
-                char err[32];
-                sprintf(err, "ERROR PARAM\r\n");
-                send_response(err);
-                return;
-            }
-
-            if (saved == '\0') break;
-            p++;
-        }
-    }
-
-    if (reset_date) {
-        year = 2026; month = 6; day = 8;
-    }
-    if (reset_clock) {
-        hour = 0; minute = 0; second = 0;
-    }
-    if (reset_alarm) {
-        int a_i;
-        for (a_i = 0; a_i < ALARM_SLOTS; a_i++) {
-            alarm_hour[a_i] = 6; alarm_minute[a_i] = 0; alarm_second[a_i] = 0;
-        }
-        alarm_enabled_mask = 0x1F;  // Mon-Fri enabled (bits 0-4)
-    }
-
-    format_direction = 0;   // FORMAT=LEFT
-    disp_on = 1;
-    scroll_active = 0;
-    scroll_cycle_count = 0; scroll_static_timer = 0;
-    led_takeover = 0;        // exit LED takeover
-    disp_mode = DISP_MODE_TIME;
-    edit_exit(0);
-
-    update_display();
-    send_response("OK\r\n");
-}
-
-// *SET:DATE YEAR <val> MONTH <val> DATE <val>
-// Also accepts *SET:DATE YEAR MONTH DATE <y> <m> <d> (keywords-first)
-void cmd_set_date(const char *params) {
-    char buf[64];
-    strncpy(buf, params, sizeof(buf));
-    buf[sizeof(buf) - 1] = '\0';
-
-    // Gather all tokens and upcase them
-    char *tokens[8]; int ntok = 0;
-    char *p = buf;
-    while (*p && ntok < 8) {
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '\0') break;
-        tokens[ntok] = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        if (*p) { *p = '\0'; p++; }
-        ntok++;
-    }
-    // Upcase
-    int i;
-    for (i = 0; i < ntok; i++) {
-        char *s = tokens[i];
-        while (*s) { *s = toupper((unsigned char)*s); s++; }
-    }
-
-    // Track which keywords were explicitly mentioned
-    int yr_kw = 0, mo_kw = 0, dy_kw = 0;
-    int kw_count = 0;
-    for (i = 0; i < ntok; i++) {
-        if (match_abbrev(tokens[i], "YEAR"))  { yr_kw = 1; kw_count++; continue; }
-        if (match_abbrev(tokens[i], "MONTH")) { mo_kw = 1; kw_count++; continue; }
-        if (match_abbrev(tokens[i], "DATE"))  { dy_kw = 1; kw_count++; continue; }
-    }
-    if (kw_count == 0) { send_response("ERROR SYNTAX\r\n"); return; }
-
-    // Assign values in order, but only to keywords that were actually present
-    int yr_val = -1, mo_val = -1, dy_val = -1;
-    int val_idx = 0;
-    int vals[4] = {-1, -1, -1, -1};
-    for (i = 0; i < ntok; i++) {
-        if (match_abbrev(tokens[i], "YEAR"))  continue;
-        if (match_abbrev(tokens[i], "MONTH")) continue;
-        if (match_abbrev(tokens[i], "DATE"))  continue;
-        if (!isdigit((unsigned char)tokens[i][0]) && tokens[i][0] != '-')
-            { send_response("ERROR SYNTAX\r\n"); return; }
-        if (val_idx < 4) vals[val_idx++] = atoi(tokens[i]);
-    }
-    val_idx = 0;
-    if (yr_kw && val_idx < 4) yr_val = vals[val_idx++];
-    if (mo_kw && val_idx < 4) mo_val = vals[val_idx++];
-    if (dy_kw && val_idx < 4) dy_val = vals[val_idx++];
-
-    int any_set = 0;
-    if (yr_val >= 0) {
-        if (yr_val < 2025 || yr_val > 2099) { send_response("ERROR RANGE\r\n"); return; }
-        year = (uint16_t)yr_val; any_set = 1;
-    }
-    if (mo_val >= 0) {
-        if (mo_val < 1 || mo_val > 12) { send_response("ERROR RANGE\r\n"); return; }
-        month = (uint8_t)mo_val; any_set = 1;
-    }
-    if (dy_val >= 0) {
-        if (dy_val < 1 || dy_val > 31) { send_response("ERROR RANGE\r\n"); return; }
-        day = (uint8_t)dy_val; any_set = 1;
-    }
-
-    if (day > get_days_in_month(year, month))
-        day = get_days_in_month(year, month);
-
-    if (any_set) { update_display(); send_response("OK\r\n"); }
-    else send_response("ERROR SYNTAX\r\n");
-}
-
-// *SET:TIME HOUR <val> MINute <val> SECond <val> / OFF
-// Also accepts *SET:TIME HOUR MIN SEC <h> <m> <s> (keywords-first)
-void cmd_set_time(const char *params) {
-    char buf[64];
-    strncpy(buf, params, sizeof(buf));
-    buf[sizeof(buf) - 1] = '\0';
-
-    // Gather all tokens
-    char *tokens[8]; int ntok = 0;
-    char *p = buf;
-    while (*p && ntok < 8) {
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '\0') break;
-        tokens[ntok] = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        if (*p) { *p = '\0'; p++; }
-        ntok++;
-    }
-    int i;
-    for (i = 0; i < ntok; i++) {
-        char *s = tokens[i];
-        while (*s) { *s = toupper((unsigned char)*s); s++; }
-    }
-
-    // Check for OFF
-    for (i = 0; i < ntok; i++) {
-        if (match_abbrev(tokens[i], "OFF")) {
-            disp_on = 0; update_display(); send_response("OK\r\n"); return;
-        }
-    }
-
-    int h_val = -1, m_val = -1, s_val = -1;
-    for (i = 0; i < ntok; i++) {
-        if (match_abbrev(tokens[i], "HOUR"))   continue;
-        if (match_abbrev(tokens[i], "MINute")) continue;
-        if (match_abbrev(tokens[i], "SECond")) continue;
-        if (!isdigit((unsigned char)tokens[i][0]) && tokens[i][0] != '-')
-            { send_response("ERROR SYNTAX\r\n"); return; }
-        int v = atoi(tokens[i]);
-        if (h_val < 0) h_val = v;
-        else if (m_val < 0) m_val = v;
-        else s_val = v;
-    }
-
-    int any_set = 0;
-    if (h_val >= 0) { if (h_val > 23) { send_response("ERROR RANGE\r\n"); return; }
-        hour = (uint8_t)h_val; any_set = 1; }
-    if (m_val >= 0) { if (m_val > 59) { send_response("ERROR RANGE\r\n"); return; }
-        minute = (uint8_t)m_val; second = 0; any_set = 1; }
-    if (s_val >= 0) { if (s_val > 59) { send_response("ERROR RANGE\r\n"); return; }
-        second = (uint8_t)s_val; any_set = 1; }
-
-    if (any_set) { update_display(); send_response("OK\r\n"); }
-    else send_response("ERROR SYNTAX\r\n");
-}
-
-// *SET:DISPlay ON / OFF
-void cmd_set_display(const char *params) {
-    char buf[16], *p;
-    strncpy(buf, params, 16);
-    buf[15] = '\0';
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-    while (*p) { *p = toupper((unsigned char)*p); p++; }
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-
-    if (strcmp(p, "ON") == 0) {
-        disp_on = 1;
-        scroll_active = 0;
-        update_display();
-        send_response("OK\r\n");
-    } else if (strcmp(p, "OFF") == 0) {
-        disp_on = 0;
-        update_display();
-        send_response("OK\r\n");
-    } else {
-        send_response("ERROR PARAM\r\n");
-    }
-}
-
-// *SET:FORMAT LEFT / RIGHT
-void cmd_set_format(const char *params) {
-    char buf[16], *p;
-    strncpy(buf, params, 16);
-    buf[15] = '\0';
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-    while (*p) { *p = toupper((unsigned char)*p); p++; }
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-
-    if (strcmp(p, "LEFT") == 0) {
-        format_direction = 0;
-        scroll_pos = 0;
-        update_display();
-        send_response("OK\r\n");
-    } else if (strcmp(p, "RIGHT") == 0) {
-        format_direction = 1;
-        scroll_pos = 0;
-        update_display();
-        send_response("OK\r\n");
-    } else {
-        send_response("ERROR PARAM\r\n");
-    }
-}
-
-// *SET:MSG <text>  — up to 32 chars, preserve case
-void cmd_set_msg(const char *params) {
-    // params points to the message text (original case preserved)
-    const char *p = params;
-    while (*p == ' ' || *p == '\t') p++;
-
-    uint8_t len = (uint8_t)strlen(p);
-    if (len > 32) len = 32;
-
-    if (len == 0) {
-        send_response("ERROR SYNTAX\r\n");
-        return;
-    }
-
-    memset(scroll_msg, 0, sizeof(scroll_msg));
-    memcpy(scroll_msg, p, len);
-    scroll_len = len;
-    scroll_pos = 0;
-    scroll_active = 1;
-    scroll_timer = 0;
-    scroll_cycle_count = 0;    // reset auto-return cycle counter
-    scroll_static_timer = 0;   // reset static hold timer
-
-    update_display();
-    send_response("OK\r\n");
-}
-
-// *SET:BEEP <10-5000>  — remote beep duration in ms (non-blocking)
-void cmd_set_beep(const char *params) {
-    const char *p = params;
-    while (*p == ' ' || *p == '\t') p++;
-
-    if (*p == '\0') {
-        send_response("ERROR PARAM\r\n");
-        return;
-    }
-
-    int duration = atoi(p);
-    if (duration < 10 || duration > 5000) {
-        send_response("ERROR RANGE\r\n");
-        return;
-    }
-
-    // Non-blocking: beep_on() enables ISR toggling via beep_active flag
-    beep_on();
-    beep_timer = (uint8_t)((duration + 50) / 100);  // convert ms to 100ms ticks
-    if (beep_timer < 1) beep_timer = 1;
-
-    send_response("OK\r\n");
-}
-
-// *SET:LED <hex2>  — direct LED byte set (takeover mode)
-void cmd_set_led(const char *params) {
-    const char *p = params;
-    while (*p == ' ' || *p == '\t') p++;
-
-    if (*p == '\0') {
-        send_response("ERROR PARAM\r\n");
-        return;
-    }
-
-    char hex[3] = {0};
-    hex[0] = (p[0] != '\0') ? p[0] : '0';
-    hex[1] = (p[1] != '\0') ? p[1] : '0';
-
-    int val;
-    if (sscanf(hex, "%2x", &val) != 1) {
-        // Try with 0x prefix
-        if (sscanf(p, "%x", &val) != 1) {
-            send_response("ERROR PARAM\r\n");
-            return;
-        }
-    }
-
-    uint8_t v = (uint8_t)(val & 0xFF);
-
-    if (v == 0x00) {
-        // 00 exits takeover and restores auto-LED logic
-        led_takeover = 0;
-        led_byte = LED_HEARTBEAT;  // restore default heartbeat
-    } else {
-        // Enter takeover: suppress all auto-LED logic
-        led_takeover = 1;
-        led_byte = v;
-    }
-
-    SysTickIntDisable();
-    { volatile uint32_t _t=0; while (I2CMasterBusy(I2C0_BASE) && ++_t<100000) {}; }
-    I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
-    SysTickIntEnable();
-    send_response("OK\r\n");
-}
-
-// *SET:KEY <NAME>  — simulate key press (10 key names)
-void cmd_set_key(const char *params) {
-    char buf[16], *p;
-    strncpy(buf, params, 16);
-    buf[15] = '\0';
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-    while (*p) { *p = toupper((unsigned char)*p); p++; }
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-
-    // Match against key names
-    int key_idx = -1;
-    if (strcmp(p, "FUNC") == 0)   key_idx = 1;
-    else if (strcmp(p, "SHIFT") == 0)  key_idx = 2;
-    else if (strcmp(p, "ADD") == 0)    key_idx = 0;
-    else if (strcmp(p, "SAVE") == 0)   key_idx = 4;
-    else if (strcmp(p, "DISP") == 0)   key_idx = 6;
-    else if (strcmp(p, "SPEED") == 0)  key_idx = 3;
-    else if (strcmp(p, "FORMAT") == 0) key_idx = 5;
-    else if (strcmp(p, "EXT") == 0)    key_idx = 7;
-    else if (strcmp(p, "USER1") == 0)  key_idx = 8;
-    else if (strcmp(p, "USER2") == 0)  key_idx = 9;
-
-    if (key_idx < 0) {
-        send_response("ERROR PARAM\r\n");
-        return;
-    }
-
-    // Simulate key action (do NOT send *EVT:KEY to avoid PC-side loopback)
-    suppress_key_event = 1;
-    key_action(key_idx, 0);
-    suppress_key_event = 0;
-    send_response("OK\r\n");
-}
-
-// *SET:MODE DAY / NIGHT (extension)
-void cmd_set_mode(const char *params) {
-    char buf[16], *p;
-    strncpy(buf, params, 16);
-    buf[15] = '\0';
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-    while (*p) { *p = toupper((unsigned char)*p); p++; }
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-
-    if (strcmp(p, "DAY") == 0) {
-        night_mode = 0;
-        alarm_snooze = 0;
-        update_display();
-        send_event_mode("DAY");
-        send_response("OK\r\n");
-    } else if (strcmp(p, "NIGHT") == 0 || strcmp(p, "NIG") == 0) {
-        // "NIG" for "NIGHT" abbreviation (NIGht)
-        night_mode = 1;
-        alarm_snooze = 1;  // suppress beeper at night
-        update_display();
-        send_event_mode("NIGHT");
-        send_response("OK\r\n");
-    } else {
-        send_response("ERROR PARAM\r\n");
-    }
-}
-
-// *SET:ALARM [slot] HOUR <val> MINute <val> SECond <val> / OFF / ON
-// Also accepts *SET:ALARM HOUR MIN SEC <h> <m> <s> (keywords-first)
-// slot (optional): MON/TUE/WED/THU/FRI/SAT/SUN/ALL (default=current day)
-void cmd_set_alarm(const char *params) {
-    char buf[64];
-    strncpy(buf, params, sizeof(buf));
-    buf[sizeof(buf) - 1] = '\0';
-
-    // Gather all tokens and upcase
-    char *tokens[10]; int ntok = 0;
-    char *p = buf;
-    while (*p && ntok < 10) {
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '\0') break;
-        tokens[ntok] = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        if (*p) { *p = '\0'; p++; }
-        ntok++;
-    }
-    if (ntok == 0) { send_response("ERROR SYNTAX\r\n"); return; }
-    int i;
-    for (i = 0; i < ntok; i++) {
-        char *s = tokens[i];
-        while (*s) { *s = toupper((unsigned char)*s); s++; }
-    }
-
-    // Check first token for day-of-week slot
-    int slot = ALARM_IDX;  // default=current day
-    int start_i = 0;
-    if (match_abbrev(tokens[0], "MONday"))      { slot = 0; start_i = 1; }
-    else if (match_abbrev(tokens[0], "TUEsday")) { slot = 1; start_i = 1; }
-    else if (match_abbrev(tokens[0], "WEDnesday")){ slot = 2; start_i = 1; }
-    else if (match_abbrev(tokens[0], "THUrsday")) { slot = 3; start_i = 1; }
-    else if (match_abbrev(tokens[0], "FRIday"))  { slot = 4; start_i = 1; }
-    else if (match_abbrev(tokens[0], "SATurday")) { slot = 5; start_i = 1; }
-    else if (match_abbrev(tokens[0], "SUNday"))   { slot = 6; start_i = 1; }
-    else if (match_abbrev(tokens[0], "ALL"))      { slot = -1; start_i = 1; }
-
-    int set_slot_start = (slot == -1) ? 0 : slot;
-    int set_slot_end   = (slot == -1) ? ALARM_SLOTS : slot + 1;
-
-    // OFF / ON
-    for (i = start_i; i < ntok; i++) {
-        if (match_abbrev(tokens[i], "OFF")) {
-            int si;
-            for (si = set_slot_start; si < set_slot_end; si++)
-                alarm_enabled_mask &= ~(1 << si);
-            alarm_ringing = 0; beep_off();
-            send_response("OK\r\n"); return;
-        }
-        if (match_abbrev(tokens[i], "ON")) {
-            int si;
-            for (si = set_slot_start; si < set_slot_end; si++)
-                alarm_enabled_mask |= (1 << si);
-            send_response("OK\r\n"); return;
-        }
-    }
-
-    // Identify time values
-    int h_val = -1, m_val = -1, s_val = -1;
-    for (i = start_i; i < ntok; i++) {
-        if (match_abbrev(tokens[i], "HOUR"))   continue;
-        if (match_abbrev(tokens[i], "MINute")) continue;
-        if (match_abbrev(tokens[i], "SECond")) continue;
-        if (!isdigit((unsigned char)tokens[i][0]) && tokens[i][0] != '-')
-            { send_response("ERROR SYNTAX\r\n"); return; }
-        int v = atoi(tokens[i]);
-        if (h_val < 0) h_val = v;
-        else if (m_val < 0) m_val = v;
-        else s_val = v;
-    }
-
-    int any_set = 0;
-    if (h_val >= 0) { if (h_val > 23) { send_response("ERROR RANGE\r\n"); return; }
-        int si; for (si = set_slot_start; si < set_slot_end; si++)
-            alarm_hour[si] = (uint8_t)h_val; any_set = 1; }
-    if (m_val >= 0) { if (m_val > 59) { send_response("ERROR RANGE\r\n"); return; }
-        int si; for (si = set_slot_start; si < set_slot_end; si++)
-            alarm_minute[si] = (uint8_t)m_val; any_set = 1; }
-    if (s_val >= 0) { if (s_val > 59) { send_response("ERROR RANGE\r\n"); return; }
-        int si; for (si = set_slot_start; si < set_slot_end; si++)
-            alarm_second[si] = (uint8_t)s_val; any_set = 1; }
-
-    if (any_set) {
-        int si;
-        for (si = set_slot_start; si < set_slot_end; si++)
-            alarm_enabled_mask |= (1 << si);
-        send_response("OK\r\n");
-    } else {
-        send_response("ERROR SYNTAX\r\n");
-    }
-}
-
-// *GET [DATE] [TIME] [FORMAT] [ALARM] [DISP] [MODE]
-void cmd_get(const char *params) {
-    char buf[32], *p;
-    strncpy(buf, params, sizeof(buf));
-    buf[sizeof(buf) - 1] = '\0';
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-    while (*p) { *p = toupper((unsigned char)*p); p++; }
-
-    p = buf;
-    while (*p == ' ' || *p == '\t') p++;
-
-    if (*p == '\0' || match_abbrev(p, "TIME")) {
-        char resp[48];
-        if (format_direction == 1) {
-            // FORMAT RIGHT: value order reversed AND each 2-digit number digit-reversed
-            uint8_t rh = (hour % 10) * 10 + (hour / 10);
-            uint8_t rm = (minute % 10) * 10 + (minute / 10);
-            uint8_t rs = (second % 10) * 10 + (second / 10);
-            sprintf(resp, "OK %02d.%02d.%02d\r\n", rs, rm, rh);
-        } else {
-            sprintf(resp, "OK %02d.%02d.%02d\r\n", hour, minute, second);
-        }
-        send_response(resp);
-        return;
-    }
-    if (match_abbrev(p, "DATE")) {
-        char resp[48];
-        if (format_direction == 1) {
-            uint8_t rd = (day % 10) * 10 + (day / 10);
-            uint8_t rm = (month % 10) * 10 + (month / 10);
-            // 4-digit year digit-reversed: 2026 → 6202
-            uint16_t ry = ((year % 10) * 1000 + ((year/10) % 10) * 100 +
-                           ((year/100) % 10) * 10 + (year / 1000));
-            sprintf(resp, "OK %02d.%02d.%04d\r\n", rd, rm, ry);
-        } else {
-            sprintf(resp, "OK %04d.%02d.%02d\r\n", year, month, day);
-        }
-        send_response(resp);
-        return;
-    }
-    if (match_abbrev(p, "FORMAT")) {
-        char resp[48];
-        sprintf(resp, "OK %s\r\n", format_direction ? "RIGHT" : "LEFT");
-        send_response(resp);
-        return;
-    }
-    if (match_abbrev(p, "ALARM")) {
-        // Compact format to avoid UART RX overflow: MON,HH,MM,SS,ON;TUE,...
-        char resp[128];
-        int off = sprintf(resp, "OK ");
-        int si;
-        for (si = 0; si < ALARM_SLOTS; si++) {
-            off += sprintf(resp + off, "%s%s,%d,%d,%d,%d",
-                si ? " ":"", DOW_NAMES[si + 1],
-                alarm_hour[si], alarm_minute[si], alarm_second[si],
-                (alarm_enabled_mask & (1 << si)) ? 1 : 0);
-        }
-        sprintf(resp + off, "\r\n");
-        send_response(resp);
-        return;
-    }
-    if (match_abbrev(p, "DISP")) {
-        char resp[48];
-        sprintf(resp, "OK %s\r\n", disp_on ? "ON" : "OFF");
-        send_response(resp);
-        return;
-    }
-    if (match_abbrev(p, "MODE")) {
-        char resp[48];
-        sprintf(resp, "OK %s\r\n", night_mode ? "NIGHT" : "DAY");
-        send_response(resp);
-        return;
-    }
-
-    send_response("ERROR SYNTAX\r\n");
-}
-
-// *SET:WEA <temp> <COND>  — weather data from PC (spec §15)
-// temp: -40..+50, COND: SUN/CLD/OVC/RAI/SNO/FOG
-void cmd_set_wea(const char *params) {
-    const char *p = params;
-    while (*p == ' ' || *p == '\t') p++;
-    if (*p == '\0') { send_response("ERROR PARAM\r\n"); return; }
-    int t = atoi(p);
-    if (t < -40 || t > 50) { send_response("ERROR RANGE\r\n"); return; }
-    weather_temp = (int8_t)t;
-    while (*p && *p != ' ') p++;
-    while (*p == ' ' || *p == '\t') p++;
-    char buf[8];
-    strncpy(buf, p, 4);
-    buf[4] = '\0';
-    char *s = buf;
-    while (*s) { *s = toupper((unsigned char)*s); s++; }
-    if (match_abbrev(buf, "SUN"))      weather_code = 1;
-    else if (match_abbrev(buf, "CLD")) weather_code = 2;
-    else if (match_abbrev(buf, "OVC")) weather_code = 3;
-    else if (match_abbrev(buf, "RAI")) weather_code = 4;
-    else if (match_abbrev(buf, "SNO")) weather_code = 5;
-    else if (match_abbrev(buf, "FOG")) weather_code = 6;
-    else { send_response("ERROR PARAM\r\n"); return; }
-    weather_age = 0;
-    send_response("OK\r\n");
-}
-
-// *PING
-void cmd_ping(void) {
-    char resp[32];
-    sprintf(resp, "*PONG %lu\r\n", uptime_seconds);
-    send_response(resp);
-}
-
-/************************** UART command processor **************************/
-void process_uart_command(void) {
-    // Atomic copy: disable all interrupts (~2us), read receive[], clear it.
-    // No ISR (UART, SysTick, Timer) can fire during copy.
-    __disable_irq();
-    strncpy(cmd_parse_buf, (const char *)receive, sizeof(cmd_parse_buf));
-    cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';
-    memset((void *)receive, 0, sizeof(receive));
-    i = 0;
-    uart_cmd_ready = 0;
-    __enable_irq();
-
-    // Trim whitespace
-    char *p = cmd_parse_buf;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-
-    int len = (int)strlen(p);
-    while (len > 0 && (p[len-1] == ' ' || p[len-1] == '\t' ||
-           p[len-1] == '\r' || p[len-1] == '\n')) {
-        p[--len] = '\0';
-    }
-
-    if (*p == '\0') return;
-
-    // Check for AT command (legacy support)
-    if (strncmp(p, "AT+", 3) == 0) {
-        for (int j = 0; p[j]; j++) p[j] = toupper((unsigned char)p[j]);
-        if (strcmp(p, "AT+CLASS#") == 0) {
-            send_response((char *)CLASS);
-            send_response("\r\n");
-        } else if (strcmp(p, "AT+STUDENTCODE#") == 0) {
-            send_response((char *)CODE);
-            send_response("\r\n");
-        }
-        return;
-    }
-
-    // Extract command token (up to first space or end-of-string)
-    char *token_start = p;
-    while (*p && *p != ' ' && *p != '\t') p++;
-    char saved_token_end = *p;
-    *p = '\0';
-    char *params = (saved_token_end == '\0') ? p : p + 1;
-    while (*params == ' ' || *params == '\t') params++;
-
-    // ---- Handle space before colon: "*SET : TIME ..." ----
-    if (token_start[0] == '*' && strchr(token_start, ':') == NULL &&
-        params[0] == ':') {
-        char *sub_start = params + 1;
-        while (*sub_start == ' ' || *sub_start == '\t') sub_start++;
-        char *sub_end = sub_start;
-        while (*sub_end && *sub_end != ' ' && *sub_end != '\t') sub_end++;
-        char saved_sub = *sub_end;
-        *sub_end = '\0';
-        snprintf(cmd_token_buf, sizeof(cmd_token_buf), "%s:%s", token_start, sub_start);
-        *sub_end = saved_sub;
-        params = sub_end;
-        while (*params == ' ' || *params == '\t') params++;
-    } else {
-        strncpy(cmd_token_buf, token_start, sizeof(cmd_token_buf));
-        cmd_token_buf[sizeof(cmd_token_buf) - 1] = '\0';
-    }
-
-    // Uppercase AFTER copy — guarantees cmd_token_buf is always uppercase
-    for (int i = 0; cmd_token_buf[i]; i++)
-        cmd_token_buf[i] = toupper((unsigned char)cmd_token_buf[i]);
-
-    // Save original-case params for commands that need it (MSG)
-    strncpy(cmd_params_buf, params, sizeof(cmd_params_buf));
-    cmd_params_buf[sizeof(cmd_params_buf) - 1] = '\0';
-
-    // Use reconstructed token for dispatch
-    char *tok = cmd_token_buf;
-    #define MATCH_CMD(tok, full, minlen) \
-        ((int)strlen(tok) >= (minlen) && strncmp(tok, full, strlen(tok)) == 0)
-
-    // Dispatch command
-    if (MATCH_CMD(tok, "*RST", 4)) {
-        cmd_rst(params);
-    } else if (MATCH_CMD(tok, "*SET:DATE", 8)) {
-        cmd_set_date(params);
-    } else if (MATCH_CMD(tok, "*SET:TIME", 8)) {
-        cmd_set_time(params);
-    } else if (MATCH_CMD(tok, "*SET:DISPLAY", 9)) {
-        cmd_set_display(params);
-    } else if (MATCH_CMD(tok, "*SET:FORMAT", 9)) {
-        cmd_set_format(params);
-    } else if (MATCH_CMD(tok, "*SET:MSG", 7)) {
-        // Use original-case params for message text
-        cmd_set_msg(cmd_params_buf);
-    } else if (MATCH_CMD(tok, "*SET:BEEP", 8)) {
-        cmd_set_beep(params);
-    } else if (MATCH_CMD(tok, "*SET:LED", 7)) {
-        cmd_set_led(params);
-    } else if (MATCH_CMD(tok, "*SET:KEY", 7)) {
-        cmd_set_key(params);
-    } else if (MATCH_CMD(tok, "*SET:MODE", 8)) {
-        cmd_set_mode(params);
-    } else if (MATCH_CMD(tok, "*SET:ALARM", 9)) {
-        cmd_set_alarm(params);
-    } else if (MATCH_CMD(tok, "*SET:WEA", 7)) {
-        cmd_set_wea(params);
-    } else if (strncmp(tok, "*GET", 4) == 0 &&
-               (int)strlen(tok) <= 12) {
-        const char *sub = params;
-        if (tok[4] == ':' && tok[5] != '\0') {
-            sub = tok + 5;  // sub-command appended to "*GET:"
-        } else if (tok[4] == ':') {
-            // trailing colon, sub-command is in params (e.g. *GET: TIME)
-            sub = params;
-        } else if (tok[4] != '\0') {
-            sub = tok + 4;  // no colon, e.g. *GETTIME
-        }
-        cmd_get(sub);
-    } else if (MATCH_CMD(tok, "*PING", 5)) {
-        cmd_ping();
-    } else {
-        char err[46];
-        sprintf(err, "ERROR '%s'\r\n", tok);
-        send_response(err);
-    }
-    #undef MATCH_CMD
-}
-
-/************************** Main function **************************/
-int main(void) {
-    volatile uint16_t gpio_flash_cnt;
-
-    // PIOSC 16MHz → PLL 480MHz → /24 = 20MHz (stable SysTick timing).
-    // OSC_MAIN not usable: board has no 25MHz external crystal.
-    ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
-        20000000);
-
-    SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);
-    SysTickEnable();
-    SysTickIntEnable();
-
-    S800_GPIO_Init();
-    S800_I2C0_Init();
-    S800_UART_Init();
-    Beeper_Timer_Init();  // 4kHz Timer0A → toggle PN1 → 2kHz square wave for passive buzzer
-
-    IntEnable(INT_UART0);
-    UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
-    IntMasterEnable();
-
-    ui32IntPriorityMask = IntPriorityMaskGet();
-    IntPriorityGroupingSet(7);
-    IntPrioritySet(INT_UART0, 0x00);
-    IntPrioritySet(FAULT_SYSTICK, 0xe0);
-
-    /************************** Boot sequence **************************/
-    Boot_Sequence();
-    update_display();
-
-    // Initial LED state: heartbeat on
-    led_byte = LED_HEARTBEAT;
-    SysTickIntDisable();
-    I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
-    SysTickIntEnable();
-
-    // Initialize alarm slots: workdays 08:30, weekends off
-    {
-        int a_i;
-        for (a_i = 0; a_i < ALARM_SLOTS; a_i++) {
-            alarm_hour[a_i] = 6; alarm_minute[a_i] = 0; alarm_second[a_i] = 0;
-        }
-        alarm_enabled_mask = 0x1F;  // Mon-Fri enabled
-    }
-
-    // Main loop
-    gpio_flash_cnt = 0;
-    scroll_timer = 0;
-
-    while (1) {
-        // ---- 10ms tasks ----
-        if (systick_10ms_status) {
-            systick_10ms_status = 0;
-
-            // GPIOF heartbeat LED (board-level indicator)
-            if (++gpio_flash_cnt >= GPIO_FLASHTIME / 10) {
-                gpio_flash_cnt = 0;
-                if (gpio_status)
-                    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_0, GPIO_PIN_0);
-                else
-                    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_0, 0);
-                gpio_status = !gpio_status;
-            }
-
-            // Key scanning
-            key_scan();
-
-            // Edit timeout tick
-            edit_tick();
-
-            // LED TX/RX timer
-            if (uart_tx_activity) { uart_tx_timer = 3; uart_tx_activity = 0; }
-        }
-
-        // ---- 100ms tasks ----
-        if (systick_100ms_status) {
-            systick_100ms_status = 0;
-
-            // LED heartbeat timer
-            led_heartbeat_timer++;
-
-            // Alarm LED fast-blink phase: toggle every 2 ticks (200ms)
-            if (alarm_ringing) {
-                static uint8_t alarm_blink_timer = 0;
-                alarm_blink_timer++;
-                if (alarm_blink_timer >= 2) {
-                    alarm_blink_timer = 0;
-                    alarm_led_blink = !alarm_led_blink;
-                }
-            }
-
-            // Update LED (writes to PCA9557)
-            led_update();
-
-            // Edit blink timer (runs even when display isn't updated each second)
-            if (edit_mode != EDIT_NONE) {
-                edit_blink_timer++;
-                if (edit_blink_timer >= 3) {  // 300ms blink period
-                    edit_blink_timer = 0;
-                    edit_blink = !edit_blink;
-                    update_display();  // refresh to show/hide blinking fields
-                }
-            }
-
-            // Scroll processing (with auto-return per §12)
-            if (scroll_active) {
-                if (scroll_len <= 8) {
-                    // ≤8 chars: static display for 2-3s then auto-return to clock
-                    scroll_static_timer++;
-                    if (scroll_static_timer >= 25) {  // 25*100ms = 2.5s
-                        scroll_active = 0;
-                        scroll_len = 0;
-                        scroll_static_timer = 0;
-                        scroll_pos = 0;
-                        memset(scroll_msg, 0, sizeof(scroll_msg));
-                        update_display();
-                    }
-                } else {
-                    // >8 chars: advance; auto-return after 1 full cycle
-                    scroll_timer++;
-                    uint8_t speed = scroll_speed_level ? SCROLL_SPEED_FAST : SCROLL_SPEED_SLOW;
-                    if (scroll_timer >= speed) {
-                        scroll_timer = 0;
-                        if (format_direction == 0) {  // LEFT
-                            scroll_pos++;
-                            if (scroll_pos >= scroll_len + 8) {
-                                scroll_pos = 0;
-                                scroll_cycle_count++;
-                            }
-                        } else {  // RIGHT
-                            if (scroll_pos == 0) {
-                                scroll_pos = scroll_len + 8 - 1;
-                                scroll_cycle_count++;
-                            } else {
-                                scroll_pos--;
-                            }
-                        }
-                        // Auto-return after 1 full cycle
-                        if (scroll_cycle_count >= 1) {
-                            scroll_active = 0;
-                            scroll_len = 0;
-                            scroll_cycle_count = 0;
-                            scroll_pos = 0;
-                            scroll_timer = 0;
-                            memset(scroll_msg, 0, sizeof(scroll_msg));
-                        }
-                        update_display();
-                    }
-                }
-            }
-
-            // Second tick
-            if (++sec_counter >= 10) {  // 10 * 100ms = 1s
-                sec_counter = 0;
-                update_time();
-                update_display();
-                uptime_seconds++;
-
-                // 1Hz heartbeat: send *EVT:DISP + *EVT:LED
-                send_event_disp();
-                send_event_led();
-
-                // Weather age: max 255 seconds before stale
-                if (weather_temp != -99 && weather_age < 255)
-                    weather_age++;
-
-                // NTP drift check: >24h since last sync → DRIFT
-                if (ntp_synced == 1 &&
-                    uptime_seconds - ntp_last_sync > 86400)
-                    ntp_synced = 2;
-            }
-
-            // Alarm state machine
-            alarm_check();
-
-            // Non-blocking beep timer
-            if (beep_active) {
-                if (beep_timer > 0) {
-                    beep_timer--;
-                }
-                if (beep_timer == 0) {
-                    beep_off();
-                    beep_active = 0;
-                }
-            }
-        }
-
-        // ---- UART command processing ----
-        if (uart_cmd_ready) {
-            process_uart_command();
-        }
-
-        // ---- Deferred ISR errors (moved out of ISR to avoid blocking TX) ----
-        if (err_line_too_long) {
-            err_line_too_long = 0;
-            UARTStringPut((uint8_t *)"ERROR LINE TOO LONG\r\n");
-        }
-    }
-}
-
-/************************** Hardware initialization functions **************************/
-void S800_UART_Init(void) {
+/* ================================================================
+ * UART
+ * ================================================================ */
+void UART_Init(uint32_t baud)
+{
     SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOA));
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOA)) {}
 
     GPIOPinConfigure(GPIO_PA0_U0RX);
     GPIOPinConfigure(GPIO_PA1_U0TX);
-
     GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
-    UARTConfigSetExpClk(UART0_BASE, ui32SysClock, 115200,
-        (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
-    UARTFIFOLevelSet(UART0_BASE, UART_FIFO_TX6_8, UART_FIFO_RX6_8);
 
-    UARTStringPut((uint8_t *)"\r\nClock System Ready\r\n");
+    UARTConfigSetExpClk(UART0_BASE, ui32SysClock, baud,
+                        (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE |
+                         UART_CONFIG_PAR_NONE));
 }
 
-void S800_GPIO_Init(void) {
+static void UART_PutStr(const char *msg)
+{
+    while (*msg) {
+        UARTCharPut(UART0_BASE, *msg++);
+    }
+}
+
+void UART_PutStrNB(const char *msg)
+{
+    while (*msg) {
+        /* 使用阻塞版本：等待 FIFO 有空间再写入，避免字符丢弃 */
+        UARTCharPut(UART0_BASE, *msg++);
+    }
+    led_uart_tx_active = 1;
+}
+
+void UART_RxIsrHandler(uint8_t byte)
+{
+    uint16_t next_head = (uart_rx_head + 1) % UART_RX_BUF_SIZE;
+    if (next_head != uart_rx_tail) {
+        uart_rx_buf[uart_rx_head] = (char)byte;
+        uart_rx_head = next_head;
+        if (byte == '\r' || byte == '\n') {
+            rx_line_ready = 1;
+        }
+    }
+    led_uart_rx_active = 1;
+}
+
+void UART0_Handler(void)
+{
+    uint32_t status = UARTIntStatus(UART0_BASE, true);
+    UARTIntClear(UART0_BASE, status);
+    while (UARTCharsAvail(UART0_BASE)) {
+        char byte = (char)UARTCharGetNonBlocking(UART0_BASE);
+        UART_RxIsrHandler((uint8_t)byte);
+    }
+}
+
+/* ================================================================
+ * 行整理
+ * ================================================================ */
+void ExtractLine(void)
+{
+    uint16_t idx;
+    char ch;
+    uint8_t is_msg;
+    uint16_t peek_tail;
+    char peek[16];
+    uint8_t pi;
+    char upper[16];
+    uint8_t j;
+
+    idx = 0;
+    is_msg = 0;
+
+    /* 窥探是否是 *SET:MSG */
+    peek_tail = uart_rx_tail;
+    pi = 0;
+    while (pi < 15 && peek_tail != uart_rx_head) {
+        peek[pi] = uart_rx_buf[peek_tail];
+        peek_tail = (peek_tail + 1) % UART_RX_BUF_SIZE;
+        pi++;
+    }
+    peek[pi] = '\0';
+    for (j = 0; j < pi; j++) {
+        upper[j] = (peek[j] >= 'a' && peek[j] <= 'z')
+                   ? peek[j] - 32 : peek[j];
+    }
+    upper[pi] = '\0';
+    if (strncmp(upper, "*SET:MSG", 8) == 0) {
+        is_msg = 1;
+    }
+
+    /* 逐字符读取 */
+    while (uart_rx_tail != uart_rx_head && idx < (LINE_MAX - 1)) {
+        ch = uart_rx_buf[uart_rx_tail];
+        uart_rx_tail = (uart_rx_tail + 1) % UART_RX_BUF_SIZE;
+
+        if (ch == '\r' || ch == '\n') {
+            if (idx == 0) continue;
+            break;
+        }
+
+        if (!is_msg && ch == ' ') {
+            /* Normalize spaces: one space between tokens */
+            if (idx > 0 && cmd_line[idx-1] != ' ')
+                cmd_line[idx++] = ' ';
+            continue;
+        }
+
+        if (!is_msg && ch >= 'a' && ch <= 'z') {
+            ch -= 32;
+        }
+
+        cmd_line[idx++] = ch;
+    }
+
+    cmd_line[idx] = '\0';
+
+    if (idx >= LINE_MAX - 1 && uart_rx_tail != uart_rx_head) {
+        while (uart_rx_tail != uart_rx_head) {
+            ch = uart_rx_buf[uart_rx_tail];
+            uart_rx_tail = (uart_rx_tail + 1) % UART_RX_BUF_SIZE;
+            if (ch == '\r' || ch == '\n') break;
+        }
+        UART_PutStrNB("ERROR LINE TOO LONG\r\n");
+        cmd_line[0] = '\0';
+    }
+}
+
+/* ================================================================
+ * 显示驱动
+ * ================================================================ */
+void Display_Init(void)
+{
+    uint8_t i;
+    for (i = 0; i < DISP_LEN; i++) {
+        disp_buf[i] = 0x00;
+        disp_dp[i]  = 0;
+    }
+    disp_blink_mask = 0;
+    disp_on = 1;
+    g_format = FMT_LEFT;
+}
+
+void Display_SetStr(const char *s, uint8_t dp_bitmap)
+{
+    uint8_t i;
+    for (i = 0; i < DISP_LEN; i++) {
+        char ch = (s && s[i]) ? s[i] : '_';
+        disp_buf[i] = seg7_encode(ch);
+        disp_dp[i]  = (dp_bitmap >> (7 - i)) & 0x01;
+    }
+}
+
+void Display_Refresh(void)
+{
+    uint8_t seg;
+    uint8_t dp;
+    uint8_t blink;
+    uint8_t blink_phase;
+    uint8_t on;
+    uint8_t seg_data;
+
+    seg = disp_buf[disp_cur_digit];
+    dp  = disp_dp[disp_cur_digit];
+    blink = (disp_blink_mask >> (7 - disp_cur_digit)) & 0x01;
+    blink_phase = (g_tick_ms / 250) & 0x01;
+    on = disp_on;
+    if (blink && blink_phase) {
+        on = 0;
+    }
+    if (!g_mode_day && disp_cur_digit >= 4) {
+        on = 0;
+    }
+
+    seg_data = seg;
+    if (dp) seg_data |= 0x80;
+
+    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT2, 0x00);
+    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT1, on ? seg_data : 0x00);
+    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT2, on ? disp_bit_mask : 0x00);
+
+    disp_cur_digit = (disp_cur_digit + 1) % DISP_LEN;
+    disp_bit_mask <<= 1;
+    if (disp_bit_mask == 0) disp_bit_mask = 0x01;
+}
+
+/* ================================================================
+ * 时钟走时
+ * ================================================================ */
+static void Time_Tick(void)
+{
+    uint8_t max_d;
+
+    g_time.s++;
+    if (g_time.s >= 60) {
+        g_time.s = 0;
+        g_time.mi++;
+        if (g_time.mi >= 60) {
+            g_time.mi = 0;
+            g_time.h++;
+            if (g_time.h >= 24) {
+                g_time.h = 0;
+                max_d = days_in_month[g_date.m - 1];
+                if (g_date.m == 2 && is_leap_year(g_date.y))
+                    max_d = 29;
+                g_date.d++;
+                if (g_date.d > max_d) {
+                    g_date.d = 1;
+                    g_date.m++;
+                    if (g_date.m > 12) {
+                        g_date.m = 1;
+                        g_date.y++;
+                    }
+                }
+                g_date.wday = (g_date.wday + 1) % 7;
+            }
+        }
+    }
+}
+
+/* ================================================================
+ * 时钟显示格式化
+ * ================================================================ */
+static void Clock_FormatDisplay(void)
+{
+    char str[DISP_LEN + 1];
+    uint8_t dp;
+
+    if (g_night_mode) {
+        /* Night: only HH.MM */
+        str[0] = '0' + (g_time.h / 10);
+        str[1] = '0' + (g_time.h % 10);
+        str[2] = '0' + (g_time.mi / 10);
+        str[3] = '0' + (g_time.mi % 10);
+        str[4] = '_'; str[5] = '_'; str[6] = '_'; str[7] = '_';
+        str[DISP_LEN] = '\0';
+        dp = (1 << 5);  /* HH.MM */
+        Display_SetStr(str, dp);
+        return;
+    }
+
+    if (g_disp_mode == DISP_MODE_TIME || g_state == STATE_EDIT_TIME) {
+        sprintf(str, "%02d%02d%02d  ", g_time.h, g_time.mi, g_time.s);
+        if (g_format == FMT_RIGHT)
+            dp = (1 << 1) | (1 << 3);
+        else
+            dp = (1 << 2) | (1 << 4);
+    } else if (g_disp_mode == DISP_MODE_DATE_SHORT) {
+        sprintf(str, "%02d%02d%02d  ", g_date.y % 100, g_date.m, g_date.d);
+        if (g_format == FMT_RIGHT)
+            dp = (1 << 1) | (1 << 3);
+        else
+            dp = (1 << 2) | (1 << 4);
+    } else {
+        /* DATE_LONG: YYYY.MMDD */
+        sprintf(str, "%04d%02d%02d", g_date.y, g_date.m, g_date.d);
+        if (g_format == FMT_RIGHT)
+            dp = (1 << 2) | (1 << 4);
+        else
+            dp = (1 << 3) | (1 << 5);
+    }
+    str[DISP_LEN] = '\0';
+    Display_SetStr(str, dp);
+}
+
+/* ================================================================
+ * 流水显示
+ * ================================================================ */
+void Scroll_Set(const char *text, uint8_t dp_bitmap)
+{
+    if (text == NULL) return;
+    scroll_len = (uint8_t)strlen(text);
+    if (scroll_len > SCROLL_BUF_SIZE - 1) scroll_len = SCROLL_BUF_SIZE - 1;
+    memcpy(scroll_buf, text, scroll_len);
+    scroll_buf[scroll_len] = '\0';
+    scroll_dp_bitmap = dp_bitmap;
+    scroll_off = 0;
+    scroll_speed = 0;
+    scroll_dir = 0;
+}
+
+void Scroll_Tick(void)
+{
+    char str[DISP_LEN + 1];
+    uint8_t dp;
+    int8_t i;
+    int8_t off;
+    int16_t idx;
+
+    if (scroll_len == 0) return;
+
+    if (scroll_len <= 8) {
+        /* ≤8 chars: static display, auto-return after 2.5s */
+        static uint8_t static_timer = 0;
+        if (++static_timer >= 25) {
+            static_timer = 0;
+            g_msg_active = 0;
+            g_state = STATE_CLOCK;
+            Clock_FormatDisplay();
+        }
+        Display_SetStr(g_msg_text, 0x00);
+        return;
+    }
+
+    off = scroll_off;
+    for (i = 0; i < DISP_LEN; i++) {
+        if (scroll_dir == 0) {
+            idx = (int16_t)(off + i);
+        } else {
+            idx = (int16_t)(scroll_len - 1 - off - i);
+        }
+        while (idx < 0) idx += (int16_t)scroll_len;
+        idx = idx % (int16_t)scroll_len;
+        str[i] = scroll_buf[idx];
+    }
+    str[DISP_LEN] = '\0';
+    dp = scroll_dp_bitmap;
+    Display_SetStr(str, dp);
+
+    scroll_off++;
+    if (scroll_off >= (int8_t)scroll_len) {
+        scroll_off = 0;
+        /* Auto-return after 1 full cycle (>8 chars) */
+        static uint8_t cycle_count = 0;
+        if (++cycle_count >= 1) {
+            cycle_count = 0;
+            g_msg_active = 0;
+            g_state = STATE_CLOCK;
+            Clock_FormatDisplay();
+        }
+    }
+}
+
+/* ================================================================
+ * 闹钟
+ * ================================================================ */
+void Alarm_Check(void)
+{
+    uint8_t idx;
+    if (g_alarm_beep_active) return;  /* already ringing */
+    if (g_night_mode) return;
+
+    idx = ALARM_IDX;  /* 0=Mon...6=Sun */
+    if (idx >= ALARM_SLOTS) return;
+    if (!(g_alarm_slot_enabled_mask & (1 << idx))) return;
+
+    if (g_time.h == g_alarm_slot[idx].h &&
+        g_time.mi == g_alarm_slot[idx].mi &&
+        g_time.s == g_alarm_slot[idx].s) {
+        g_alarm_beep_active = 1;
+        beep_start_ms = g_tick_ms;
+        UART_PutStrNB("*EVT:ALARM\r\n");
+    }
+}
+
+static void Alarm_Stop(void)
+{
+    if (g_alarm_beep_active) {
+        g_alarm_beep_active = 0;
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0);
+        UART_PutStrNB("*EVT:ALARM_OFF\r\n");
+    }
+}
+
+/* ================================================================
+ * LED 控制
+ * ================================================================ */
+static void PCA9557_Write(uint8_t data)
+{
+    I2C_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, data);
+}
+
+static void LED_Update(void)
+{
+    uint8_t val;
+    uint8_t prev_cache;
+
+    prev_cache = led_pca9557_cache;
+
+    if (g_led_override) {
+        PCA9557_Write(~g_led_value);
+        led_pca9557_cache = g_led_value;
+        if (led_pca9557_cache != prev_cache) {
+            Report_LED();
+        }
+        return;
+    }
+
+    val = 0xFF;
+
+    /* Night mode: only heartbeat LED */
+    if (g_night_mode) {
+        if ((g_tick_ms / 500) & 0x01) val &= ~LED_HEARTBEAT;
+        led_pca9557_cache = val;
+        PCA9557_Write(val);
+        return;
+    }
+
+    /* LED0: 心跳 1Hz */
+    if ((g_tick_ms / 500) & 0x01) {
+        val &= ~LED_HEARTBEAT;
+    }
+
+    /* LED1: 闹钟 */
+    if (g_alarm_beep_active) {
+        if ((g_tick_ms / 100) & 0x01) {
+            val &= ~LED_ALARM;
+        }
+    } else {
+        uint8_t idx = ALARM_IDX;
+        if (idx < ALARM_SLOTS && (g_alarm_slot_enabled_mask & (1 << idx)))
+            val &= ~LED_ALARM;
+    }
+
+    /* LED2: 编辑模式 */
+    if (g_state == STATE_EDIT_DATE ||
+        g_state == STATE_EDIT_TIME ||
+        g_state == STATE_EDIT_ALARM) {
+        val &= ~LED_EDIT;
+    }
+
+    /* LED3: UART 收发 */
+    if (led_uart_tx_active || led_uart_rx_active) {
+        val &= ~LED_TX;
+    }
+
+    /* LED4-7: weather/NTP */
+    if (g_weather_valid) {
+        if (strcmp(g_weather_cond, "SUN") == 0)
+            val &= ~LED_SUN;
+        else if (strcmp(g_weather_cond, "RAI") == 0 ||
+                 strcmp(g_weather_cond, "SNO") == 0)
+            val &= ~LED_RAI_SNO;
+        if (g_weather_temp >= 30)
+            val &= ~LED_HI_TEMP;
+    }
+    if (g_ntp_synced == 1) {
+        val &= ~LED_RX;
+    } else if (g_ntp_synced == 2) {
+        if ((g_tick_ms / 500) & 0x01) val &= ~LED_RX;
+    }
+
+    led_pca9557_cache = val;
+    PCA9557_Write(val);
+
+    /* LED 状态变化时立即上报 */
+    if (led_pca9557_cache != prev_cache) {
+        Report_LED();
+    }
+}
+
+/* ================================================================
+ * GPIO / I2C 初始化
+ * ================================================================ */
+static void GPIO_Init(void)
+{
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF));
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF)) {}
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_0);
+
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOJ);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOJ));
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPION));
-
-    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_0);    // heartbeat LED
-    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0);    // USER1 indicator
-    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_1);    // Beeper (PN1)
-    GPIOPadConfigSet(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1,
-        GPIO_STRENGTH_8MA, GPIO_PIN_TYPE_STD);
-    GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0);  // ensure starts silent
-
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOJ)) {}
     GPIOPinTypeGPIOInput(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1);
     GPIOPadConfigSet(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1,
-        GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
+                     GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
+
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPION)) {}
+    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+    GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1, 0);
 }
 
-void S800_I2C0_Init(void) {
+static void I2C_Init(void)
+{
     SysCtlPeripheralEnable(SYSCTL_PERIPH_I2C0);
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOB)) {}
+
     GPIOPinConfigure(GPIO_PB2_I2C0SCL);
     GPIOPinConfigure(GPIO_PB3_I2C0SDA);
     GPIOPinTypeI2CSCL(GPIO_PORTB_BASE, GPIO_PIN_2);
@@ -2146,177 +1072,1104 @@ void S800_I2C0_Init(void) {
     I2CMasterInitExpClk(I2C0_BASE, ui32SysClock, true);
     I2CMasterEnable(I2C0_BASE);
 
-    // TCA6424: Port0 = input (keys), Port1 = output (segments), Port2 = output (digit select)
-    (void)I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT0, 0xFF);
-    (void)I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT1, 0x00);
-    (void)I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT2, 0x00);
+    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT0, 0xFF);
+    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT1, 0x00);
+    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_CONFIG_PORT2, 0x00);
 
-    // PCA9557: all output (LEDs)
-    (void)I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_CONFIG, 0x00);
-    (void)I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, 0xFF);  // all off (active low)
+    I2C_WriteByte(PCA9557_I2CADDR, PCA9557_CONFIG, 0x00);
+    I2C_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, 0xFF);
 }
 
-/************************** Beeper Timer Init (2kHz square wave on PN1 via GPIO toggle) **************************/
-void Beeper_Timer_Init(void) {
-    // Timer0A at 4kHz → ISR toggles PN1 when beep_active=1.
-    // Pin starts LOW (S800_GPIO_Init sets it to 0).
-    // Timer always runs — no enable/disable glitches.
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0));
-    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
-    TimerLoadSet(TIMER0_BASE, TIMER_A, ui32SysClock / 4000);  // 4kHz
-    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    IntPrioritySet(INT_TIMER0A_TM4C123, 0xC0);
-    IntEnable(INT_TIMER0A_TM4C123);
-    TimerEnable(TIMER0_BASE, TIMER_A);  // always running
-}
+/* ================================================================
+ * 开机画面
+ * ================================================================ */
+void Boot_Sequence(void)
+{
+    uint32_t start;
+    uint32_t last_disp;
+    int phase;
+    int i;
 
-void TIMER0A_Handler(void) {
-    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    if (beep_active) {
-        // Toggle PN1 at 4kHz ISR rate → 2kHz square wave output
-        static uint8_t phase = 0;
-        phase = !phase;
-        if (phase)
-            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
-        else
-            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
-    }
-}
-
-uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {
-    uint8_t rop;
-    volatile uint32_t to;
-    to = 0; while (I2CMasterBusy(I2C0_BASE) && ++to < 100000) {};
-    if (to >= 100000) return 0xFF;
-    I2CMasterSlaveAddrSet(I2C0_BASE, DevAddr, false);
-    I2CMasterDataPut(I2C0_BASE, RegAddr);
-    I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
-    to = 0; while (I2CMasterBusy(I2C0_BASE) && ++to < 100000) {};
-    if (to >= 100000) return 0xFF;
-    rop = (uint8_t)I2CMasterErr(I2C0_BASE);
-
-    I2CMasterDataPut(I2C0_BASE, WriteData);
-    I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_FINISH);
-    to = 0; while (I2CMasterBusy(I2C0_BASE) && ++to < 100000) {};
-    if (to >= 100000) return 0xFF;
-
-    rop = (uint8_t)I2CMasterErr(I2C0_BASE);
-    return rop;
-}
-
-uint8_t I2C0_ReadByte(uint8_t DevAddr, uint8_t RegAddr) {
-    uint8_t value;
-    volatile uint32_t to;
-    to = 0; while (I2CMasterBusy(I2C0_BASE) && ++to < 100000) {};
-    if (to >= 100000) return 0xFF;
-    I2CMasterSlaveAddrSet(I2C0_BASE, DevAddr, false);
-    I2CMasterDataPut(I2C0_BASE, RegAddr);
-    I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_SEND);
-    to = 0; while (I2CMasterBusBusy(I2C0_BASE) && ++to < 100000);
-    if (to >= 100000) return 0xFF;
-    (void)I2CMasterErr(I2C0_BASE);
-    Delay_us(10);
-    I2CMasterSlaveAddrSet(I2C0_BASE, DevAddr, true);
-    I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);
-    to = 0; while (I2CMasterBusBusy(I2C0_BASE) && ++to < 100000);
-    if (to >= 100000) return 0xFF;
-    value = I2CMasterDataGet(I2C0_BASE);
-    Delay_us(10);
-    return value;
-}
-
-/************************** SysTick ISR (1kHz) **************************/
-void SysTick_Handler(void) {
-    // ---- Display scanning (8 digits, dynamic) ----
-    I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT2, 0x00);
-    Delay_us(5);
-
-    I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT1, disp_buf[scan_cnt]);
-    Delay_us(5);
-
-    uint8_t bit_pos = SCAN_REVERSE ? (7 - scan_cnt) : scan_cnt;
-    I2C0_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT2, 1 << bit_pos);
-
-    scan_cnt++;
-    if (scan_cnt >= 8) scan_cnt = 0;
-
-    // ---- Timing counters ----
-    if (systick_100ms_counter != 0)
-        systick_100ms_counter--;
-    else {
-        systick_100ms_counter = SYSTICK_FREQUENCY / 10;
-        systick_100ms_status = 1;
-    }
-
-    if (systick_10ms_counter != 0)
-        systick_10ms_counter--;
-    else {
-        systick_10ms_counter = SYSTICK_FREQUENCY / 100;
-        systick_10ms_status = 1;
-    }
-
-    // USER1 indicator (PN0 mirrors PJ0)
-    if (GPIOPinRead(GPIO_PORTJ_BASE, GPIO_PIN_0) == 0)
-        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0);
-    else
-        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, 0);
-}
-
-/************************** UART0 ISR **************************/
-void UART0_Handler(void) {
-    int32_t uart0_int_status;
-    uart0_int_status = UARTIntStatus(UART0_BASE, true);
-    UARTIntClear(UART0_BASE, uart0_int_status);
-
-    // RX activity → blink LED
-    uart_rx_timer = 3;
-
-    // Read available characters
-    while (UARTCharsAvail(UART0_BASE)) {
-        char ch = (char)UARTCharGetNonBlocking(UART0_BASE);
-
-        // Handle \r\n line ending
-        if (ch == '\r') continue;  // skip CR
-        if (ch == '\n') {
-            // Complete line received
-            if (receive_overflow) {
-                // Line exceeded 64 chars — discard and report
-                receive_overflow = 0;
-                i = 0;
-                memset((void *)receive, 0, sizeof(receive));
-                err_line_too_long = 1;  // error deferred to foreground
-                return;
+    for (phase = 0; phase < 2; phase++) {
+        /* 全亮 */
+        for (i = 0; i < DISP_LEN; i++) disp_buf[i] = 0xFF;
+        disp_blink_mask = 0;
+        PCA9557_Write(0x00);
+        start = g_tick_ms;
+        last_disp = 0;
+        while (g_tick_ms - start < 500) {
+            /* 每 2ms 刷新一位数码管（消除闪烁） */
+            if (Tick_TimedOut(last_disp, 2)) {
+                last_disp = g_tick_ms;
+                Display_Refresh();
             }
-            receive[i] = '\0';
-            i = 0;
-            uart_cmd_ready = 1;
-            return;
+            if (flag_10ms) { flag_10ms = 0; LED_Update(); }
         }
 
-        // Accumulate character (allow up to 64 chars, index 0-63)
-        if (i < 64) {
-            receive[i++] = ch;
-        } else {
-            // Line too long — set overflow, discard rest
-            receive_overflow = 1;
+        /* 全灭 */
+        for (i = 0; i < DISP_LEN; i++) disp_buf[i] = 0x00;
+        PCA9557_Write(0xFF);
+        start = g_tick_ms;
+        last_disp = 0;
+        while (g_tick_ms - start < 500) {
+            if (Tick_TimedOut(last_disp, 2)) {
+                last_disp = g_tick_ms;
+                Display_Refresh();
+            }
+            if (flag_10ms) { flag_10ms = 0; LED_Update(); }
         }
     }
 
-    // Timeout: flush partial buffer (also check overflow).
-    // Use bitwise AND — multiple flags may be set simultaneously (e.g. RX+RT).
-    if (uart0_int_status & 0x40) {
-        if (receive_overflow) {
-            receive_overflow = 0;
-            i = 0;
-            memset((void *)receive, 0, sizeof(receive));
-            err_line_too_long = 1;  // deferred to foreground, no blocking in ISR
+    /* 学号: 20260001 */
+    Display_SetStr("20260001", 0x00);
+    start = g_tick_ms;
+    last_disp = 0;
+    while (g_tick_ms - start < 900) {
+        if (Tick_TimedOut(last_disp, 2)) {
+            last_disp = g_tick_ms;
+            Display_Refresh();
+        }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); }
+    }
+
+    /* 姓名: HUZHENYE */
+    Display_SetStr("HUZHENYE", 0x00);
+    start = g_tick_ms;
+    last_disp = 0;
+    while (g_tick_ms - start < 900) {
+        if (Tick_TimedOut(last_disp, 2)) {
+            last_disp = g_tick_ms;
+            Display_Refresh();
+        }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); }
+    }
+
+    /* 版本号持续 1s */
+    Display_SetStr("V1.0    ", 0x00);
+    start = g_tick_ms;
+    last_disp = 0;
+    while (g_tick_ms - start < 1000) {
+        if (Tick_TimedOut(last_disp, 2)) {
+            last_disp = g_tick_ms;
+            Display_Refresh();
+        }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); }
+    }
+}
+
+/* ================================================================
+ * 编辑 FSM
+ * ================================================================ */
+
+static void Format_DateDisplay(void)
+{
+    char str[DISP_LEN + 1];
+    uint8_t dp;
+    str[0] = '0' + ((g_date.y / 10) % 10);
+    str[1] = '0' + (g_date.y % 10);
+    str[2] = '0' + (g_date.m / 10);
+    str[3] = '0' + (g_date.m % 10);
+    str[4] = '0' + (g_date.d / 10);
+    str[5] = '0' + (g_date.d % 10);
+    str[6] = '_';
+    str[7] = '_';
+    str[DISP_LEN] = '\0';
+    /* 小数点: YY.MM.DD → dp在 bit2和 bit4 (从左边数, 即0x14) */
+    /* MSB=最左位: bit7=pos0, bit6=pos1, ... → pos2=bit5, pos4=bit3 */
+    dp = (1 << 5) | (1 << 3);
+    Display_SetStr(str, dp);
+}
+
+static void Format_AlarmDisplay(void)
+{
+    char str[DISP_LEN + 1];
+    uint8_t dp;
+    str[0] = '0' + (g_alarm.t.h / 10);
+    str[1] = '0' + (g_alarm.t.h % 10);
+    str[2] = '0' + (g_alarm.t.mi / 10);
+    str[3] = '0' + (g_alarm.t.mi % 10);
+    str[4] = '0' + (g_alarm.t.s / 10);
+    str[5] = '0' + (g_alarm.t.s % 10);
+    str[6] = '_';
+    str[7] = '_';
+    str[DISP_LEN] = '\0';
+    dp = (1 << 5) | (1 << 3);  /* HH.MM.SS → pos2, pos4 */
+    Display_SetStr(str, dp);
+}
+
+static void Edit_Enter(sys_state_t st)
+{
+    g_state = st;
+    g_edit_pos = 0;
+    edit_modified = 0;
+    g_last_activity_ms = g_tick_ms;
+
+    if (st == STATE_EDIT_DATE) {
+        edit_field = EF_YEAR;
+        disp_blink_mask = 0xC0;       /* 闪烁最高两位 = 最左两个数码管(年) */
+        Format_DateDisplay();
+    } else if (st == STATE_EDIT_TIME) {
+        edit_field = EF_HOUR;
+        disp_blink_mask = 0xC0;
+        Clock_FormatDisplay();
+    } else if (st == STATE_EDIT_ALARM) {
+        edit_field = EF_HOUR;
+        disp_blink_mask = 0xC0;
+        /* Sync current day's slot into g_alarm.t for editing */
+        {
+            uint8_t idx = ALARM_IDX;
+            if (idx < ALARM_SLOTS) {
+                g_alarm.t.h  = g_alarm_slot[idx].h;
+                g_alarm.t.mi = g_alarm_slot[idx].mi;
+                g_alarm.t.s  = g_alarm_slot[idx].s;
+                g_alarm.enabled = (g_alarm_slot_enabled_mask & (1 << idx)) ? 1 : 0;
+            }
+        }
+        Format_AlarmDisplay();
+    }
+}
+
+static void Edit_Exit(uint8_t save)
+{
+    char buf[48];
+    const char *type;
+    uint16_t val;
+
+    if (save && edit_modified) {
+        val = 0;
+        if (g_state == STATE_EDIT_DATE) {
+            type = "DATE";
+            val = g_date.y * 10000 + g_date.m * 100 + g_date.d;
+        } else if (g_state == STATE_EDIT_TIME) {
+            type = "TIME";
+            val = g_time.h * 10000 + g_time.mi * 100 + g_time.s;
+        } else {
+            type = "ALARM";
+            val = g_alarm.t.h * 10000 + g_alarm.t.mi * 100 + g_alarm.t.s;
+            /* Sync back to current day's multi-alarm slot */
+            {
+                uint8_t idx = ALARM_IDX;
+                if (idx < ALARM_SLOTS) {
+                    g_alarm_slot[idx].h  = g_alarm.t.h;
+                    g_alarm_slot[idx].mi = g_alarm.t.mi;
+                    g_alarm_slot[idx].s  = g_alarm.t.s;
+                    if (g_alarm.enabled)
+                        g_alarm_slot_enabled_mask |= (1 << idx);
+                    else
+                        g_alarm_slot_enabled_mask &= ~(1 << idx);
+                }
+            }
+        }
+        sprintf(buf, "*EVT:EDIT %s %u\r\n", type, val);
+        UART_PutStrNB(buf);
+    }
+    g_state = STATE_CLOCK;
+    disp_blink_mask = 0;
+    g_edit_pos = 0;
+    Clock_FormatDisplay();
+}
+
+void Edit_HandleKey(key_code_t code, key_event_t evt)
+{
+    uint8_t max_pos;
+    uint8_t pos_byte;
+    uint8_t max_d;
+
+    if (evt != KEV_DOWN && evt != KEV_LONG) return;
+
+    g_last_activity_ms = g_tick_ms;
+
+    switch (code) {
+
+    case KEY_FUNC:
+        if (evt == KEV_LONG) {
+            /* 长按: 保存并完全退出 */
+            Edit_Exit(1);
+        } else {
+            /* 短按: 保存当前并切换到下一个编辑模式 */
+            if (edit_modified && g_state == STATE_EDIT_DATE) {
+                /* 日期修改后才上报 */
+                char buf[48];
+                uint16_t val = g_date.y * 10000 + g_date.m * 100 + g_date.d;
+                sprintf(buf, "*EVT:EDIT DATE %u\r\n", val);
+                UART_PutStrNB(buf);
+            } else if (edit_modified && g_state == STATE_EDIT_TIME) {
+                char buf[48];
+                uint16_t val = g_time.h * 10000 + g_time.mi * 100 + g_time.s;
+                sprintf(buf, "*EVT:EDIT TIME %u\r\n", val);
+                UART_PutStrNB(buf);
+            } else if (edit_modified && g_state == STATE_EDIT_ALARM) {
+                char buf[48];
+                uint16_t val = g_alarm.t.h * 10000 + g_alarm.t.mi * 100 + g_alarm.t.s;
+                sprintf(buf, "*EVT:EDIT ALARM %u\r\n", val);
+                UART_PutStrNB(buf);
+                /* Sync back to multi-alarm slot */
+                {
+                    uint8_t idx = ALARM_IDX;
+                    if (idx < ALARM_SLOTS) {
+                        g_alarm_slot[idx].h  = g_alarm.t.h;
+                        g_alarm_slot[idx].mi = g_alarm.t.mi;
+                        g_alarm_slot[idx].s  = g_alarm.t.s;
+                    }
+                }
+            }
+            edit_modified = 0;
+            if (g_state == STATE_EDIT_DATE) {
+                Edit_Enter(STATE_EDIT_TIME);
+            } else if (g_state == STATE_EDIT_TIME) {
+                Edit_Enter(STATE_EDIT_ALARM);
+            } else {
+                /* 从 ALARM 回到 CLOCK */
+                g_state = STATE_CLOCK;
+                disp_blink_mask = 0;
+                g_edit_pos = 0;
+                Clock_FormatDisplay();
+            }
+        }
+        break;
+
+    case KEY_SHIFT:
+        /* 6 位 (YYMMDD 或 HHMMSS)，两位一组 */
+        max_pos = 6;
+        g_edit_pos = (g_edit_pos + 1) % max_pos;
+        pos_byte = g_edit_pos / 2;
+        /* 闪烁对应两位: pos_byte=0→高两位(位置0-1), 1→中两位(2-3), 2→低两位(4-5) */
+        disp_blink_mask = (uint8_t)(0xC0 >> (pos_byte * 2));
+
+        /* 根据当前编辑状态映射字段 */
+        if (g_state == STATE_EDIT_DATE) {
+            if (pos_byte == 0)      edit_field = EF_YEAR;
+            else if (pos_byte == 1) edit_field = EF_MONTH;
+            else                    edit_field = EF_DAT;
+        } else {
+            /* TIME 或 ALARM */
+            if (pos_byte == 0)      edit_field = EF_HOUR;
+            else if (pos_byte == 1) edit_field = EF_MINUTE;
+            else                    edit_field = EF_SECOND;
+        }
+        break;
+
+    case KEY_ADD:
+        edit_modified = 1;
+        switch (edit_field) {
+            case EF_YEAR:
+                g_date.y++;
+                if (g_date.y > 2099) g_date.y = 2026;
+                Format_DateDisplay();
+                break;
+            case EF_MONTH:
+                g_date.m++;
+                if (g_date.m > 12) g_date.m = 1;
+                Format_DateDisplay();
+                break;
+            case EF_DAT:
+                max_d = days_in_month[g_date.m - 1];
+                if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
+                g_date.d++;
+                if (g_date.d > max_d) g_date.d = 1;
+                Format_DateDisplay();
+                break;
+            case EF_HOUR:
+                if (g_state == STATE_EDIT_TIME || g_state == STATE_EDIT_DATE) {
+                    g_time.h++;
+                    if (g_time.h >= 24) g_time.h = 0;
+                    Clock_FormatDisplay();
+                } else {
+                    g_alarm.t.h++;
+                    if (g_alarm.t.h >= 24) g_alarm.t.h = 0;
+                    Format_AlarmDisplay();
+                }
+                break;
+            case EF_MINUTE:
+                if (g_state == STATE_EDIT_TIME || g_state == STATE_EDIT_DATE) {
+                    g_time.mi++;
+                    if (g_time.mi >= 60) g_time.mi = 0;
+                    Clock_FormatDisplay();
+                } else {
+                    g_alarm.t.mi++;
+                    if (g_alarm.t.mi >= 60) g_alarm.t.mi = 0;
+                    Format_AlarmDisplay();
+                }
+                break;
+            case EF_SECOND:
+                if (g_state == STATE_EDIT_TIME || g_state == STATE_EDIT_DATE) {
+                    g_time.s++;
+                    if (g_time.s >= 60) g_time.s = 0;
+                    Clock_FormatDisplay();
+                } else {
+                    g_alarm.t.s++;
+                    if (g_alarm.t.s >= 60) g_alarm.t.s = 0;
+                    Format_AlarmDisplay();
+                }
+                break;
+            default: break;
+        }
+        break;
+
+    case KEY_SAVE:
+        if (evt == KEV_LONG) {
+            Edit_Exit(1);
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+/* ================================================================
+ * 命令解析 (full protocol: 14 commands + abbreviation + space tolerance)
+ * ================================================================ */
+#define MATCH_CMD(tok, full, minlen) \
+    ((int)strlen(tok) >= (minlen) && strncmp(tok, full, (size_t)(minlen)) == 0)
+
+void ProcessCommand(char *cmd)
+{
+    char *p, *params;
+
+    if (cmd[0] == '\0') return;
+
+    /* *PING */
+    if (strncmp(cmd, "*PING", 5) == 0) {
+        char resp[32];
+        sprintf(resp, "*PONG %lu\r\n", g_uptime_s);
+        UART_PutStrNB(resp);
+        return;
+    }
+
+    /* *RST [DATE|TIME|ALARM] */
+    if (strncmp(cmd, "*RST", 4) == 0) {
+        p = cmd + 4;
+        while (*p == ' ') p++;
+        if (*p == '\0') {
+            g_time.h = 0; g_time.mi = 0; g_time.s = 0;
+            g_date.y = 2026; g_date.m = 6; g_date.d = 15; g_date.wday = 1;
+            g_format = FMT_LEFT;
+            disp_on = 1;
+            g_disp_mode = DISP_MODE_TIME;
+            g_state   = STATE_CLOCK;
+            disp_blink_mask = 0;
+            g_led_override = 0;
+            g_msg_active   = 0;
+            g_scroll_speed_level = 0;
+            g_alarm_beep_active = 0;
+            remote_beep_active  = 0;
+            {
+                uint8_t ai;
+                for (ai = 0; ai < ALARM_SLOTS; ai++) {
+                    g_alarm_slot[ai].h = 6;
+                    g_alarm_slot[ai].mi = 0;
+                    g_alarm_slot[ai].s = 0;
+                }
+            }
+            g_alarm_slot_enabled_mask = 0x1F;
+        } else {
+            char tok2[16]; int ti = 0;
+            while (*p) {
+                while (*p == ' ') p++;
+                if (*p == '\0') break;
+                ti = 0;
+                while (*p && *p != ' ' && ti < 15) tok2[ti++] = *(p++);
+                tok2[ti] = '\0';
+                if (match_abbrev(tok2, "DATE") || match_abbrev(tok2, "YEAR") || match_abbrev(tok2, "MONTH"))
+                    { g_date.y = 2026; g_date.m = 6; g_date.d = 8; }
+                else if (match_abbrev(tok2, "TIME"))
+                    { g_time.h = 0; g_time.mi = 0; g_time.s = 0; }
+                else if (match_abbrev(tok2, "ALARM")) {
+                    uint8_t ai;
+                    for (ai = 0; ai < ALARM_SLOTS; ai++) {
+                        g_alarm_slot[ai].h = 6;
+                        g_alarm_slot[ai].mi = 0;
+                        g_alarm_slot[ai].s = 0;
+                    }
+                    g_alarm_slot_enabled_mask = 0x1F;
+                }
+            }
+        }
+        Clock_FormatDisplay();
+        UART_PutStrNB("OK\r\n");
+        return;
+    }
+
+    /* *SET:... */
+    if (strncmp(cmd, "*SET:", 5) == 0) {
+        p = cmd + 5;
+        while (*p == ' ') p++;  /* skip space between *SET: and sub-command */
+
+        /* *SET:DATE */
+        if (MATCH_CMD(p, "DATE", 4)) {
+            char *tokens[8]; int ntok = 0;
+            char tbuf[64]; strncpy(tbuf, p + 4, 60); tbuf[59] = '\0';
+            params = tbuf;
+            while (*params == ' ') params++;
+            char *tp = params;
+            while (*tp && ntok < 8) {
+                while (*tp == ' ') tp++;
+                if (*tp == '\0') break;
+                tokens[ntok++] = tp;
+                while (*tp && *tp != ' ') tp++;
+                if (*tp) { *tp = '\0'; tp++; }
+            }
+            int i;
+            for (i = 0; i < ntok; i++) {
+                char *s = tokens[i];
+                while (*s) { *s = toupper((unsigned char)*s); s++; }
+            }
+            int yr_val = -1, mo_val = -1, dy_val = -1;
+            int val_idx = 0;
+            int vals[4] = {-1,-1,-1,-1};
+            for (i = 0; i < ntok; i++) {
+                if (match_abbrev(tokens[i], "YEAR"))  continue;
+                if (match_abbrev(tokens[i], "MONTH")) continue;
+                if (match_abbrev(tokens[i], "DATE"))  continue;
+                if (val_idx < 4) vals[val_idx++] = atoi(tokens[i]);
+            }
+            val_idx = 0;
+            for (i = 0; i < ntok; i++) {
+                if (match_abbrev(tokens[i], "YEAR")  && val_idx < 4) yr_val = vals[val_idx++];
+                if (match_abbrev(tokens[i], "MONTH") && val_idx < 4) mo_val = vals[val_idx++];
+                if (match_abbrev(tokens[i], "DATE")  && val_idx < 4) dy_val = vals[val_idx++];
+            }
+            int any = 0;
+            if (yr_val >= 0) {
+                if (yr_val < 2025 || yr_val > 2099) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                g_date.y = (uint16_t)yr_val; any = 1;
+            }
+            if (mo_val >= 0) {
+                if (mo_val < 1 || mo_val > 12) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                g_date.m = (uint8_t)mo_val; any = 1;
+            }
+            if (dy_val >= 0) {
+                if (dy_val < 1 || dy_val > 31) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                g_date.d = (uint8_t)dy_val; any = 1;
+            }
+            if (!any) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            {
+                uint8_t max_d = days_in_month[g_date.m - 1];
+                if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
+                if (g_date.d > max_d) g_date.d = max_d;
+            }
+            UART_PutStrNB("OK\r\n");
             return;
         }
-        if (i > 0) {
-            receive[i] = '\0';
-            i = 0;
-            uart_cmd_ready = 1;
+
+        /* *SET:TIME */
+        if (MATCH_CMD(p, "TIME", 4)) {
+            char *tokens[8]; int ntok = 0;
+            char tbuf[64]; strncpy(tbuf, p + 4, 60); tbuf[59] = '\0';
+            params = tbuf;
+            while (*params == ' ') params++;
+            char *tp = params;
+            while (*tp && ntok < 8) {
+                while (*tp == ' ') tp++;
+                if (*tp == '\0') break;
+                tokens[ntok++] = tp;
+                while (*tp && *tp != ' ') tp++;
+                if (*tp) { *tp = '\0'; tp++; }
+            }
+            int i;
+            for (i = 0; i < ntok; i++) {
+                char *s = tokens[i];
+                while (*s) { *s = toupper((unsigned char)*s); s++; }
+            }
+            for (i = 0; i < ntok; i++) {
+                if (match_abbrev(tokens[i], "OFF")) { disp_on = 0; UART_PutStrNB("OK\r\n"); return; }
+            }
+            int h_val = -1, m_val = -1, s_val = -1;
+            for (i = 0; i < ntok; i++) {
+                if (match_abbrev(tokens[i], "HOUR"))   continue;
+                if (match_abbrev(tokens[i], "MINute")) continue;
+                if (match_abbrev(tokens[i], "SECond")) continue;
+                int v = atoi(tokens[i]);
+                if (h_val < 0) h_val = v;
+                else if (m_val < 0) m_val = v;
+                else s_val = v;
+            }
+            if (h_val >= 0) { if (h_val > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.h = (uint8_t)h_val; }
+            if (m_val >= 0) { if (m_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.mi = (uint8_t)m_val; g_time.s = 0; }
+            if (s_val >= 0) { if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.s = (uint8_t)s_val; }
+            UART_PutStrNB("OK\r\n");
+            return;
+        }
+
+        /* *SET:ALARM */
+        if (MATCH_CMD(p, "ALARM", 5)) {
+            char *tokens[10]; int ntok = 0;
+            char tbuf[64]; strncpy(tbuf, p + 5, 60); tbuf[59] = '\0';
+            params = tbuf;
+            while (*params == ' ') params++;
+            char *tp = params;
+            while (*tp && ntok < 10) {
+                while (*tp == ' ') tp++;
+                if (*tp == '\0') break;
+                tokens[ntok++] = tp;
+                while (*tp && *tp != ' ') tp++;
+                if (*tp) { *tp = '\0'; tp++; }
+            }
+            if (ntok == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            int i;
+            for (i = 0; i < ntok; i++) {
+                char *s = tokens[i];
+                while (*s) { *s = toupper((unsigned char)*s); s++; }
+            }
+            int slot = (int)ALARM_IDX;
+            int start_i = 0;
+            if (match_abbrev(tokens[0], "MONday"))      { slot = 0; start_i = 1; }
+            else if (match_abbrev(tokens[0], "TUEsday")) { slot = 1; start_i = 1; }
+            else if (match_abbrev(tokens[0], "WEDnesday")){ slot = 2; start_i = 1; }
+            else if (match_abbrev(tokens[0], "THUrsday")) { slot = 3; start_i = 1; }
+            else if (match_abbrev(tokens[0], "FRIday"))  { slot = 4; start_i = 1; }
+            else if (match_abbrev(tokens[0], "SATurday")) { slot = 5; start_i = 1; }
+            else if (match_abbrev(tokens[0], "SUNday"))   { slot = 6; start_i = 1; }
+            else if (match_abbrev(tokens[0], "ALL"))      { slot = -1; start_i = 1; }
+            int ss = (slot == -1) ? 0 : slot;
+            int se = (slot == -1) ? ALARM_SLOTS : slot + 1;
+            for (i = start_i; i < ntok; i++) {
+                if (match_abbrev(tokens[i], "OFF")) {
+                    int si;
+                    for (si = ss; si < se; si++) g_alarm_slot_enabled_mask &= ~(1 << si);
+                    g_alarm_beep_active = 0;
+                    UART_PutStrNB("OK\r\n"); return;
+                }
+                if (match_abbrev(tokens[i], "ON")) {
+                    int si;
+                    for (si = ss; si < se; si++) g_alarm_slot_enabled_mask |= (1 << si);
+                    UART_PutStrNB("OK\r\n"); return;
+                }
+            }
+            int h_val = -1, m_val = -1, s_val = -1;
+            for (i = start_i; i < ntok; i++) {
+                if (match_abbrev(tokens[i], "HOUR"))   continue;
+                if (match_abbrev(tokens[i], "MINute")) continue;
+                if (match_abbrev(tokens[i], "SECond")) continue;
+                int v = atoi(tokens[i]);
+                if (h_val < 0) h_val = v;
+                else if (m_val < 0) m_val = v;
+                else s_val = v;
+            }
+            if (h_val >= 0) {
+                if (h_val > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                int si;
+                for (si = ss; si < se; si++) {
+                    g_alarm_slot[si].h = (uint8_t)h_val;
+                    g_alarm_slot_enabled_mask |= (1 << si);
+                }
+            }
+            if (m_val >= 0) {
+                if (m_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                int si;
+                for (si = ss; si < se; si++) {
+                    g_alarm_slot[si].mi = (uint8_t)m_val;
+                    g_alarm_slot_enabled_mask |= (1 << si);
+                }
+            }
+            if (s_val >= 0) {
+                if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                int si;
+                for (si = ss; si < se; si++) {
+                    g_alarm_slot[si].s = (uint8_t)s_val;
+                    g_alarm_slot_enabled_mask |= (1 << si);
+                }
+            }
+            UART_PutStrNB("OK\r\n");
+            return;
+        }
+
+        /* *SET:DISPlay ON/OFF */
+        if (MATCH_CMD(p, "DISPLAY", 4) || MATCH_CMD(p, "DISP", 4)) {
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0)
+                { disp_on = 1; UART_PutStrNB("OK\r\n"); return; }
+            if (strncmp(p, "OFF", 3) == 0 || strncmp(p, "off", 3) == 0)
+                { disp_on = 0; UART_PutStrNB("OK\r\n"); return; }
+            UART_PutStrNB("ERROR PARAM\r\n"); return;
+        }
+
+        /* *SET:FORMAT LEFT/RIGHT */
+        if (MATCH_CMD(p, "FORMAT", 6)) {
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            if (strncmp(p, "LEFT", 4) == 0)  { g_format = FMT_LEFT;  UART_PutStrNB("OK\r\n"); return; }
+            if (strncmp(p, "RIGHT", 5) == 0) { g_format = FMT_RIGHT; UART_PutStrNB("OK\r\n"); return; }
+            UART_PutStrNB("ERROR PARAM\r\n"); return;
+        }
+
+        /* *SET:MSG — ExtractLine preserves original case for MSG lines */
+        if (MATCH_CMD(p, "MSG", 3)) {
+            /* Text follows "MSG" in cmd_line (ExtractLine keeps case+spaces) */
+            char *msg_text = p + 3;
+            while (*msg_text == ' ') msg_text++;
+            if (*msg_text == '\0') { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            uint8_t len = (uint8_t)strlen(msg_text);
+            if (len > 32) len = 32;
+            memcpy(g_msg_text, msg_text, len);
+            g_msg_text[len] = '\0';
+            g_msg_len = len;
+            g_msg_active = 1;
+            g_msg_end_ms = g_tick_ms + 3000;
+            if (len <= 8) {
+                Display_SetStr(g_msg_text, 0x00);
+                g_state = STATE_MSG_STATIC;
+            } else {
+                Scroll_Set(g_msg_text, 0x00);
+                g_state = STATE_SCROLL;
+            }
+            UART_PutStrNB("OK\r\n");
+            return;
+        }
+
+        /* *SET:BEEP 10-5000 */
+        if (MATCH_CMD(p, "BEEP", 4)) {
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            uint16_t ms = (uint16_t)atoi(p);
+            if (ms < 10 || ms > 5000) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+            remote_beep_active = 1;
+            remote_beep_end_ms = g_tick_ms + ms;
+            UART_PutStrNB("OK\r\n");
+            return;
+        }
+
+        /* *SET:LED <hex2> */
+        if (MATCH_CMD(p, "LED", 3)) {
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            if (*p == '\0') { UART_PutStrNB("ERROR PARAM\r\n"); return; }
+            int v;
+            if (sscanf(p, "%x", &v) != 1) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
+            g_led_value = (uint8_t)(v & 0xFF);
+            g_led_override = (g_led_value != 0);
+            UART_PutStrNB("OK\r\n");
+            return;
+        }
+
+        /* *SET:KEY <NAME> */
+        if (MATCH_CMD(p, "KEY", 3)) {
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            key_code_t kc = KEY_NONE;
+            if (strncmp(p, "FUNC", 4) == 0 || strncmp(p, "func", 4) == 0)   kc = KEY_FUNC;
+            else if (strncmp(p, "SHIFT", 5) == 0) kc = KEY_SHIFT;
+            else if (strncmp(p, "ADD", 3) == 0)    kc = KEY_ADD;
+            else if (strncmp(p, "SAVE", 4) == 0)   kc = KEY_SAVE;
+            else if (strncmp(p, "DISP", 4) == 0)   kc = KEY_DISP;
+            else if (strncmp(p, "SPEED", 5) == 0) kc = KEY_SPEED;
+            else if (strncmp(p, "FORMAT", 6) == 0) kc = KEY_FORMAT;
+            else if (strncmp(p, "EXT", 3) == 0)    kc = KEY_EXT;
+            else if (strncmp(p, "USER1", 5) == 0) kc = KEY_USER1;
+            else if (strncmp(p, "USER2", 5) == 0) kc = KEY_USER2;
+            if (kc == KEY_NONE) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
+            g_suppress_key_evt = 1;
+            KeyQueue_Push(kc, KEV_DOWN);
+            g_suppress_key_evt = 0;
+            UART_PutStrNB("OK\r\n");
+            return;
+        }
+
+        /* *SET:MODE DAY/NIGHT */
+        if (MATCH_CMD(p, "MODE", 4)) {
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            if (strncmp(p, "DAY", 3) == 0 || strncmp(p, "day", 3) == 0)
+                { g_night_mode = 0; g_mode_day = 1; UART_PutStrNB("OK\r\n"); return; }
+            if (strncmp(p, "NIGHT", 5) == 0 || strncmp(p, "night", 5) == 0)
+                { g_night_mode = 1; g_mode_day = 0; UART_PutStrNB("OK\r\n"); return; }
+            UART_PutStrNB("ERROR PARAM\r\n"); return;
+        }
+
+        /* *SET:WEA <temp> <COND> */
+        if (MATCH_CMD(p, "WEA", 3)) {
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            int t = atoi(p);
+            if (t < -40 || t > 50) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+            g_weather_temp = (int8_t)t;
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            if (match_abbrev(p, "SUN"))      strcpy(g_weather_cond, "SUN");
+            else if (match_abbrev(p, "CLD")) strcpy(g_weather_cond, "CLD");
+            else if (match_abbrev(p, "OVC")) strcpy(g_weather_cond, "OVC");
+            else if (match_abbrev(p, "RAI")) strcpy(g_weather_cond, "RAI");
+            else if (match_abbrev(p, "SNO")) strcpy(g_weather_cond, "SNO");
+            else if (match_abbrev(p, "FOG")) strcpy(g_weather_cond, "FOG");
+            else { UART_PutStrNB("ERROR PARAM\r\n"); return; }
+            g_weather_valid = 1;
+            g_weather_age = 0;
+            UART_PutStrNB("OK\r\n");
+            return;
+        }
+
+        UART_PutStrNB("ERROR SYNTAX\r\n");
+        return;
+    }
+
+    /* *GET:... */
+    if (strncmp(cmd, "*GET:", 5) == 0) {
+        p = cmd + 5;
+        while (*p == ' ') p++;
+        if (*p == '\0' || match_abbrev(p, "TIME")) {
+            char resp[48];
+            if (g_format == FMT_RIGHT) {
+                uint8_t rh = (g_time.h % 10) * 10 + (g_time.h / 10);
+                uint8_t rm = (g_time.mi % 10) * 10 + (g_time.mi / 10);
+                uint8_t rs = (g_time.s % 10) * 10 + (g_time.s / 10);
+                sprintf(resp, "%02u.%02u.%02u\r\n", rs, rm, rh);
+            } else {
+                sprintf(resp, "%02u.%02u.%02u\r\n", g_time.h, g_time.mi, g_time.s);
+            }
+            UART_PutStrNB(resp);
+            return;
+        }
+        if (match_abbrev(p, "DATE")) {
+            char resp[48];
+            if (g_format == FMT_RIGHT) {
+                uint8_t rd = (g_date.d % 10) * 10 + (g_date.d / 10);
+                uint8_t rm = (g_date.m % 10) * 10 + (g_date.m / 10);
+                uint16_t ry = ((g_date.y % 10) * 1000 + ((g_date.y/10) % 10) * 100 +
+                              ((g_date.y/100) % 10) * 10 + (g_date.y / 1000));
+                sprintf(resp, "%02u.%02u.%04u\r\n", rd, rm, ry);
+            } else {
+                sprintf(resp, "%04u.%02u.%02u\r\n", g_date.y, g_date.m, g_date.d);
+            }
+            UART_PutStrNB(resp);
+            return;
+        }
+        if (match_abbrev(p, "FORMAT")) {
+            UART_PutStrNB(g_format == FMT_LEFT ? "LEFT\r\n" : "RIGHT\r\n");
+            return;
+        }
+        if (match_abbrev(p, "ALARM")) {
+            char resp[160]; int off = 0;
+            int si;
+            for (si = 0; si < ALARM_SLOTS; si++) {
+                off += sprintf(resp + off, "%s%s,%d,%d,%d,%d",
+                    si ? " " : "", DOW_NAMES[si + 1],
+                    g_alarm_slot[si].h, g_alarm_slot[si].mi, g_alarm_slot[si].s,
+                    (g_alarm_slot_enabled_mask & (1 << si)) ? 1 : 0);
+            }
+            sprintf(resp + off, "\r\n");
+            UART_PutStrNB(resp);
+            return;
+        }
+        if (match_abbrev(p, "DISP")) {
+            UART_PutStrNB(disp_on ? "ON\r\n" : "OFF\r\n");
+            return;
+        }
+        if (match_abbrev(p, "MODE")) {
+            UART_PutStrNB(g_night_mode ? "NIGHT\r\n" : "DAY\r\n");
+            return;
+        }
+        UART_PutStrNB("ERROR SYNTAX\r\n");
+        return;
+    }
+
+    /* *NTP */
+    if (strncmp(cmd, "*NTP", 4) == 0) {
+        g_ntp_synced = 1;
+        g_ntp_last_sync_ms = g_tick_ms;
+        UART_PutStrNB("OK\r\n");
+        return;
+    }
+
+    {
+        char err[46];
+        sprintf(err, "ERROR '%s'\r\n", cmd);
+        UART_PutStrNB(err);
+    }
+    #undef MATCH_CMD
+}
+
+
+static void Report_Display(void)
+{
+    char str[DISP_LEN + 1];
+    uint8_t dp_hex;
+    uint8_t i;
+    uint8_t j;
+    char buf[40];
+
+    dp_hex = 0;
+    for (i = 0; i < DISP_LEN; i++) {
+        uint8_t seg = disp_buf[i] & 0x7F;
+        char ch = '_';
+        for (j = 0; j < 36; j++) {
+            if (seg7_table[j] == seg) {
+                if (j < 10) ch = '0' + (char)j;
+                else if (j < 36) ch = 'A' + (char)(j - 10);
+                break;
+            }
+        }
+        str[i] = ch;
+        if (disp_dp[i]) dp_hex |= (uint8_t)(1 << (7 - i));
+    }
+    str[DISP_LEN] = '\0';
+    sprintf(buf, "*EVT:DISP %s %02X\r\n", str, dp_hex);
+    UART_PutStrNB(buf);
+}
+
+static void Report_LED(void)
+{
+    char buf[20];
+    /* PCA9557 低电平点亮 → 取反后上报 (1=亮, 0=灭) */
+    sprintf(buf, "*EVT:LED %02X\r\n", (uint8_t)(~led_pca9557_cache));
+    UART_PutStrNB(buf);
+}
+
+/* ================================================================
+ * 主函数
+ * ================================================================ */
+int main(void)
+{
+    uint32_t last_key_scan;
+    uint32_t last_disp_scan;
+    uint32_t last_led_update;
+    uint32_t last_report;
+    uint32_t last_scroll;
+    uint32_t elapsed;
+    uint8_t  phase_in_cycle;
+
+    last_key_scan     = 0;
+    last_disp_scan    = 0;
+    last_led_update   = 0;
+    last_report       = 0;
+    last_scroll       = 0;
+
+    /* 系统时钟 */
+    ui32SysClock = SysCtlClockFreqSet(
+        (SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480), 20000000);
+
+    /* SysTick 1ms */
+    SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);
+    SysTickEnable();
+    SysTickIntEnable();
+
+    /* 外设 */
+    GPIO_Init();
+    I2C_Init();
+    UART_Init(115200);
+    Display_Init();
+
+    /* UART 中断 */
+    IntEnable(INT_UART0);
+    UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
+
+    /* Beeper Timer (PN1, 2kHz) — init AFTER IntMasterEnable */
+    Beeper_Init();
+
+    IntMasterEnable();
+
+    /* 默认值 */
+    g_time.h = 12; g_time.mi = 0; g_time.s = 0;
+    g_date.y = 2026; g_date.m = 6; g_date.d = 15; g_date.wday = 1;
+    g_format = FMT_LEFT;
+    disp_on = 1;
+    g_mode_day = 1;
+    g_ntp_synced = 0;
+    g_weather_valid = 0;
+    g_night_mode = 0;
+    g_disp_mode = DISP_MODE_TIME;
+    g_scroll_speed_level = 0;
+    g_suppress_key_evt = 0;
+    {
+        uint8_t ai;
+        for (ai = 0; ai < ALARM_SLOTS; ai++) {
+            g_alarm_slot[ai].h = 6;
+            g_alarm_slot[ai].mi = 0;
+            g_alarm_slot[ai].s = 0;
+        }
+        g_alarm_slot_enabled_mask = 0x1F;
+    }
+
+    /* 开机画面 */
+    g_state = STATE_BOOT;
+    Boot_Sequence();
+
+    g_state = STATE_CLOCK;
+    Clock_FormatDisplay();
+
+    UART_PutStr("S800 Ready\r\n");
+
+    /* ================================================================
+     * 主循环
+     * ================================================================ */
+    while (1) {
+
+        /* 10ms 任务 */
+        if (flag_10ms) {
+            flag_10ms = 0;
+
+            if (Tick_TimedOut(last_key_scan, 10)) {
+                last_key_scan = g_tick_ms;
+                Key_Scan();
+            }
+
+            if (Tick_TimedOut(last_led_update, 100)) {
+                last_led_update = g_tick_ms;
+                LED_Update();
+                if (led_uart_tx_active) {
+                    led_uart_tx_active = 0;
+                }
+                if (led_uart_rx_active) {
+                    led_uart_rx_active = 0;
+                }
+            }
+        }
+
+        /* 显示扫描 2ms */
+        if (Tick_TimedOut(last_disp_scan, 2)) {
+            last_disp_scan = g_tick_ms;
+            Display_Refresh();
+        }
+
+        /* 100ms 任务 */
+        if (flag_100ms) {
+            flag_100ms = 0;
+
+            /* 流水显示 */
+            if (g_state == STATE_SCROLL) {
+                uint16_t speed_ms = (g_scroll_speed_level == 0) ? 500 : 250;
+                if (Tick_TimedOut(last_scroll, speed_ms)) {
+                    last_scroll = g_tick_ms;
+                    Scroll_Tick();
+                }
+            }
+
+            /* 闹钟响铃 — Timer0A ISR toggles PN1 at 2kHz */
+            if (g_alarm_beep_active) {
+                if (Tick_TimedOut(beep_start_ms, 10000)) {
+                    Alarm_Stop();
+                }
+            }
+
+            /* 远程蜂鸣（非阻塞，100ms检查一次） */
+            if (remote_beep_active) {
+                if (Tick_TimedOut(remote_beep_end_ms, 0)) {
+                    remote_beep_active = 0;
+                }
+            }
+        }
+
+        /* 1秒 任务 */
+        if (flag_1s) {
+            flag_1s = 0;
+            g_uptime_s++;
+
+            if (g_state == STATE_CLOCK || g_state == STATE_SCROLL) {
+                Time_Tick();
+            }
+
+            Alarm_Check();
+
+            if (g_state == STATE_MSG_STATIC) {
+                if (Tick_TimedOut(g_msg_end_ms, 0)) {
+                    g_msg_active = 0;
+                    g_state = STATE_CLOCK;
+                }
+            }
+
+            if (g_state == STATE_WEATHER) {
+                if (Tick_TimedOut(g_msg_end_ms, 0)) {
+                    g_state = STATE_CLOCK;
+                }
+            }
+
+            if (g_state == STATE_CLOCK) {
+                Clock_FormatDisplay();
+            }
+
+            if (g_state >= STATE_EDIT_DATE && g_state <= STATE_EDIT_ALARM) {
+                if (Tick_TimedOut(g_last_activity_ms, 5000)) {
+                    Edit_Exit(0);
+                }
+            }
+
+            if (g_ntp_synced == 1 &&
+                Tick_TimedOut(g_ntp_last_sync_ms, 86400000UL)) {
+                g_ntp_synced = 2;
+            }
+
+            if (g_weather_valid && g_weather_age < 255) g_weather_age++;
+
+            if (Tick_TimedOut(last_report, 1000)) {
+                last_report = g_tick_ms;
+                Report_Display();
+                Report_LED();
+            }
+        }
+
+        /* UART 行接收 */
+        if (rx_line_ready) {
+            rx_line_ready = 0;
+            ExtractLine();
+            ProcessCommand(cmd_line);
+        }
+
+        /* 按键事件处理 */
+        {
+            key_code_t kc;
+            key_event_t ke;
+            ke = Key_GetEvent(&kc);
+            if (ke != KEV_NONE) {
+                char buf[32];
+
+                g_last_activity_ms = g_tick_ms;
+
+                if (kc == KEY_FUNC && g_alarm_beep_active) {
+                    Alarm_Stop();
+                }
+                else if (g_state == STATE_SCROLL) {
+                    if (kc != KEY_FUNC && kc != KEY_SHIFT &&
+                        kc != KEY_ADD && kc != KEY_SAVE) {
+                        g_state = STATE_CLOCK;
+                        Clock_FormatDisplay();
+                    }
+                }
+                else if (g_state >= STATE_EDIT_DATE && g_state <= STATE_EDIT_ALARM) {
+                    Edit_HandleKey(kc, ke);
+                }
+                else if (g_state == STATE_CLOCK) {
+                    if (kc == KEY_FUNC && ke == KEV_DOWN) {
+                        Edit_Enter(STATE_EDIT_DATE);
+                    } else if (kc == KEY_USER2 && ke == KEV_DOWN) {
+                        if (g_weather_valid) {
+                            char wstr[9];
+                            sprintf(wstr, "%2dC %-3s", g_weather_temp, g_weather_cond);
+                            Display_SetStr(wstr, 0x00);
+                            g_state = STATE_WEATHER;
+                            g_msg_end_ms = g_tick_ms + 5000;
+                        } else {
+                            Display_SetStr("--C  ---", 0x00);
+                            g_state = STATE_WEATHER;
+                            g_msg_end_ms = g_tick_ms + 3000;
+                        }
+                    } else if (kc == KEY_SPEED && ke == KEV_DOWN) {
+                        g_scroll_speed_level = !g_scroll_speed_level;
+                    } else if (kc == KEY_DISP && ke == KEV_DOWN) {
+                        g_disp_mode = (g_disp_mode + 1) % 3;
+                        if (g_state == STATE_SCROLL) { g_state = STATE_CLOCK; }
+                        Clock_FormatDisplay();
+                    } else if (kc == KEY_FORMAT && ke == KEV_DOWN) {
+                        g_format = (g_format == FMT_LEFT) ? FMT_RIGHT : FMT_LEFT;
+                        Clock_FormatDisplay();
+                    } else if (kc == KEY_EXT && ke == KEV_DOWN) {
+                        uint8_t idx = ALARM_IDX;
+                        if (g_alarm_slot_enabled_mask & (1 << idx))
+                            g_alarm_slot_enabled_mask &= ~(1 << idx);
+                        else
+                            g_alarm_slot_enabled_mask |= (1 << idx);
+                        if (!(g_alarm_slot_enabled_mask & (1 << idx)))
+                            Alarm_Stop();
+                    } else if (kc == KEY_USER1 && ke == KEV_DOWN) {
+                        /* PC will trigger NTP sync */
+                    }
+                }
+
+                if (ke == KEV_DOWN && !g_suppress_key_evt) {
+                    sprintf(buf, "*EVT:KEY %s\r\n", keycode_to_name(kc));
+                    UART_PutStrNB(buf);
+                }
+            }
         }
     }
 }

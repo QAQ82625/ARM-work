@@ -1903,9 +1903,10 @@ void process_uart_command(void) {
 int main(void) {
     volatile uint16_t gpio_flash_cnt;
 
-    // System clock init — internal oscillator (known working configuration)
+    // 25MHz external crystal → PLL 480MHz → SYSDIV 24 = 20MHz (exact)
+    // UART 115200 error: 0.06% vs PIOSC ±3% — eliminates bit corruption
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
+        (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
         20000000);
 
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);

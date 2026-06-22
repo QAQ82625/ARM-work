@@ -1699,14 +1699,15 @@ void cmd_get(const char *params) {
         return;
     }
     if (match_abbrev(p, "ALARM")) {
-        // Return all 7 slots: MON HH MM SS ON/OFF TUE HH MM SS ON/OFF ...
-        char resp[196];
-        int off = sprintf(resp, "OK");
+        // Compact format to avoid UART RX overflow: MON,HH,MM,SS,ON;TUE,...
+        char resp[128];
+        int off = sprintf(resp, "OK ");
         int si;
         for (si = 0; si < ALARM_SLOTS; si++) {
-            off += sprintf(resp + off, " %s %02d %02d %02d %s",
-                DOW_NAMES[si + 1], alarm_hour[si], alarm_minute[si], alarm_second[si],
-                (alarm_enabled_mask & (1 << si)) ? "ON" : "OFF");
+            off += sprintf(resp + off, "%s%s,%d,%d,%d,%d",
+                si ? " ":"", DOW_NAMES[si + 1],
+                alarm_hour[si], alarm_minute[si], alarm_second[si],
+                (alarm_enabled_mask & (1 << si)) ? 1 : 0);
         }
         sprintf(resp + off, "\r\n");
         send_response(resp);

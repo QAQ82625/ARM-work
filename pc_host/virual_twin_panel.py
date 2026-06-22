@@ -1565,8 +1565,9 @@ class VirtualTwinPanel(QMainWindow):
         elif data_upper.startswith("OK"):
             parts = data.split()
             if len(parts) >= 4:
-                # Check for *GET:ALARM multi-slot response: OK MON HH MM SS ON TUE ...
-                if len(parts) >= 7 and parts[1].upper() in ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"):
+                # Check for *GET:ALARM multi-slot response (old or compact format)
+                if ((len(parts) >= 7 and parts[1].upper() in ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")) or
+                    (len(parts) >= 2 and ',' in parts[1] and parts[1].split(',')[0].upper() in ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"))):
                     self._parse_alarm_response(parts, data_upper)
                 # Check for single-slot: OK HH MM SS ON/OFF
                 elif len(parts) >= 5 and parts[4].upper() in ("ON", "OFF"):
@@ -1612,8 +1613,29 @@ class VirtualTwinPanel(QMainWindow):
             self.log(f"错误: {data}", "error")
 
     def _parse_alarm_response(self, parts, data_upper):
-        """Parse multi-slot alarm response: OK MON HH MM SS ON TUE HH MM SS ON ..."""
+        """Parse multi-slot alarm response.
+        Old format: OK MON 06 00 00 ON TUE 06 00 00 ON ...
+        New compact: OK MON,6,0,0,1 TUE,6,0,0,1 ..."""
         days_idx = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+        # Try compact format first: MON,6,0,0,1
+        if len(parts) >= 2 and ',' in parts[1]:
+            for slot in parts[1:]:
+                fields = slot.split(',')
+                if len(fields) < 4: continue
+                day = fields[0].upper()
+                if day not in days_idx: continue
+                idx = days_idx[day]
+                try:
+                    self.alarm_spins[idx][0].setValue(int(fields[1]))
+                    self.alarm_spins[idx][1].setValue(int(fields[2]))
+                    self.alarm_spins[idx][2].setValue(int(fields[3]))
+                    self.alarm_spins[idx][3].setChecked(bool(int(fields[4])) if len(fields) > 4 else False)
+                except (ValueError, IndexError):
+                    pass
+            self.lbl_alarm_status.setText("已从MCU读取")
+            self.lbl_alarm_status.setStyleSheet("color: #95E77E; font-size: 13px;")
+            return
+        # Fallback: old format OK MON HH MM SS ON TUE HH MM SS ON ...
         i = 1
         while i + 4 < len(parts):
             day = parts[i].upper()

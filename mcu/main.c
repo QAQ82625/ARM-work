@@ -1817,20 +1817,15 @@ void process_uart_command(void) {
     char *params = (saved_token_end == '\0') ? p : p + 1;
     while (*params == ' ' || *params == '\t') params++;
 
-    // Uppercase token
-    for (int i = 0; token_start[i]; i++)
-        token_start[i] = toupper((unsigned char)token_start[i]);
-
     // ---- Handle space before colon: "*SET : TIME ..." ----
     if (token_start[0] == '*' && strchr(token_start, ':') == NULL &&
         params[0] == ':') {
-        char *sub_start = params + 1;  // skip ':'
+        char *sub_start = params + 1;
         while (*sub_start == ' ' || *sub_start == '\t') sub_start++;
         char *sub_end = sub_start;
         while (*sub_end && *sub_end != ' ' && *sub_end != '\t') sub_end++;
         char saved_sub = *sub_end;
         *sub_end = '\0';
-
         snprintf(cmd_token_buf, sizeof(cmd_token_buf), "%s:%s", token_start, sub_start);
         *sub_end = saved_sub;
         params = sub_end;
@@ -1839,6 +1834,10 @@ void process_uart_command(void) {
         strncpy(cmd_token_buf, token_start, sizeof(cmd_token_buf));
         cmd_token_buf[sizeof(cmd_token_buf) - 1] = '\0';
     }
+
+    // Uppercase AFTER copy — guarantees cmd_token_buf is always uppercase
+    for (int i = 0; cmd_token_buf[i]; i++)
+        cmd_token_buf[i] = toupper((unsigned char)cmd_token_buf[i]);
 
     // Save original-case params for commands that need it (MSG)
     strncpy(cmd_params_buf, params, sizeof(cmd_params_buf));

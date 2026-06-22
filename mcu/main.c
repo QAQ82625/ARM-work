@@ -88,14 +88,14 @@
 #define SCROLL_SPEED_FAST       2       // advance every 200ms (2 * 100ms)
 
 /************************** LED bit assignments **************************/
-#define LED_HEARTBEAT           0x01    // bit 0
-#define LED_ALARM               0x02    // bit 1
-#define LED_EDIT                0x04    // bit 2
-#define LED_TX                  0x08    // bit 3
-#define LED_RX                  0x10    // bit 4
-#define LED_NTP                 0x20    // bit 5 (extension)
-#define LED_RESERVED1           0x40    // bit 6
-#define LED_RESERVED2           0x80    // bit 7
+#define LED_HEARTBEAT           0x01    // bit 0 — heartbeat 1Hz
+#define LED_ALARM               0x02    // bit 1 — alarm enabled/ringing
+#define LED_EDIT                0x04    // bit 2 — edit mode active
+#define LED_TX                  0x08    // bit 3 — TX activity (300ms blink)
+#define LED_RX                  0x10    // bit 4 — RX activity / NTP synced (steady)
+#define LED_SUN                 0x20    // bit 5 — weather SUN
+#define LED_RAI_SNO             0x40    // bit 6 — weather RAI/SNO
+#define LED_HI_TEMP             0x80    // bit 7 — temp >=30°C
 
 /************************** Beeper control **************************/
 // S800 uses PS1720P02 (C96061) PASSIVE piezoelectric buzzer on PK5 (M0PWM7).
@@ -394,23 +394,23 @@ void led_update(void) {
         else
             out &= ~LED_EDIT;
 
-        // Weather LEDs (LED4-6) per spec §11/§15
+        // Weather LEDs per spec §11/§15
         if (weather_code == 1 && weather_temp != -99)   // SUN
-            out |= LED_NTP;           // LED4=SUN (reuse NTP bit, see mapping)
+            out |= LED_SUN;
         else if (weather_code >= 4 && weather_temp != -99) // RAI/SNO
-            out |= LED_RESERVED1;     // LED5=RAI/SNO
+            out |= LED_RAI_SNO;
         else
-            out &= ~(LED_NTP | LED_RESERVED1);
+            out &= ~(LED_SUN | LED_RAI_SNO);
 
         if (weather_temp >= 30)                       // >=30°C
-            out |= LED_RESERVED2;    // LED6=high temp
+            out |= LED_HI_TEMP;
         else
-            out &= ~LED_RESERVED2;
+            out &= ~LED_HI_TEMP;
     }
 
-    // NTP LED7: SYNCED=steady on; DRIFT=1Hz toggle (handled in main loop)
+    // NTP synced: overlay on RX bit (LED4) — RX only blinks 300ms then goes dark
     if (ntp_synced == 1)
-        out |= (0x80);
+        out |= LED_RX;
 
     led_byte = out;
 

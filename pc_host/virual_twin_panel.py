@@ -470,7 +470,7 @@ class VirtualTwinPanel(QMainWindow):
 
         row2 = QHBoxLayout()
         row2.setAlignment(Qt.AlignCenter)
-        led2_labels = ['📥 RX', '☀️ 晴天', '🌧️ 雨雪', '🔥 高温']
+        led2_labels = ['📥 RX/🕐 NTP', '☀️ 晴天', '🌧️ 雨雪', '🔥 高温']
         self.leds2 = []
         for label in led2_labels:
             led = SimpleLED(label)

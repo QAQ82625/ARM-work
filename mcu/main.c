@@ -433,14 +433,10 @@ void beep_on(void) {
     if (night_mode) return;
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7,
         PWMGenPeriodGet(PWM0_BASE, PWM_GEN_3) / 2);
-    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
 void beep_off(void) {
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 0);
-    PWMGenDisable(PWM0_BASE, PWM_GEN_3);
-    beep_active = 0;
-    beep_timer = 0;
 }
 
 /************************** Alarm state machine **************************/
@@ -2167,10 +2163,9 @@ void Beeper_PWM_Init(void) {
     PWMGenConfigure(PWM0_BASE, PWM_GEN_3,
         PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
     PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, ui32SysClock / 2000);  // 2kHz
-    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7,
-        PWMGenPeriodGet(PWM0_BASE, PWM_GEN_3) / 2);              // 50% duty
-    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);              // enable output
-    // Do NOT start the PWM generator yet — beep_on() does that.
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 0);                    // 0% duty = silent
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);               // enable output
+    PWMGenEnable(PWM0_BASE, PWM_GEN_3);   // always running — PK5 never floats
 }
 
 uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {

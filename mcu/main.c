@@ -1781,10 +1781,15 @@ void cmd_ping(void) {
 void process_uart_command(void) {
     uart_cmd_ready = 0;  // clear flag first
 
-    // Use file-scope buffers to minimize stack usage (was ~224 bytes on stack)
+    // Protect receive[] from UART ISR during copy — disable RX int briefly.
+    // ISR and process_uart_command share receive[] and 'i'; without protection
+    // a new char arriving mid-copy corrupts the command line (bit5 pattern).
+    UARTIntDisable(UART0_BASE, UART_INT_RX | UART_INT_RT);
     strncpy(cmd_parse_buf, receive, sizeof(cmd_parse_buf));
     cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';
     memset(receive, 0, sizeof(receive));
+    i = 0;  // reset shared index
+    UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
 
     // Trim whitespace
     char *p = cmd_parse_buf;
@@ -1903,9 +1908,9 @@ void process_uart_command(void) {
 int main(void) {
     volatile uint16_t gpio_flash_cnt;
 
-    // System clock init — use external 16MHz crystal (±30ppm) for accurate UART 115200
+    // System clock init — use internal oscillator (PIOSC)
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
+        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
         20000000);
 
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);

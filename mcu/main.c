@@ -439,12 +439,13 @@ void Beeper_Timer_Init(void);
 
 void beep_on(void) {
     if (night_mode) return;
+    beep_active = 1;  // ISR sees this and starts toggling PN1
     TimerEnable(TIMER0_BASE, TIMER_A);
 }
 
 void beep_off(void) {
-    TimerDisable(TIMER0_BASE, TIMER_A);
-    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);  // pin stays LOW when silent
+    beep_active = 0;  // ISR sees this and stops toggling
+    GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);  // pin guaranteed LOW
 }
 
 /************************** Alarm state machine **************************/
@@ -1444,9 +1445,8 @@ void cmd_set_beep(const char *params) {
         return;
     }
 
-    // Non-blocking: start beep and set timer
+    // Non-blocking: beep_on() enables ISR toggling via beep_active flag
     beep_on();
-    beep_active = 1;
     beep_timer = (uint8_t)((duration + 50) / 100);  // convert ms to 100ms ticks
     if (beep_timer < 1) beep_timer = 1;
 
@@ -2149,8 +2149,9 @@ void S800_I2C0_Init(void) {
 
 /************************** Beeper Timer Init (2kHz square wave on PN1 via GPIO toggle) **************************/
 void Beeper_Timer_Init(void) {
-    // Timer0A at 4kHz → ISR toggles PN1 → 2kHz square wave on passive piezo buzzer.
-    // Pin starts LOW (S800_GPIO_Init sets it). Timer disabled until beep_on().
+    // Timer0A at 4kHz → ISR toggles PN1 when beep_active=1.
+    // Pin starts LOW (S800_GPIO_Init sets it to 0).
+    // Timer always runs — no enable/disable glitches.
     SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
     while (!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0));
     TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
@@ -2158,17 +2159,20 @@ void Beeper_Timer_Init(void) {
     TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
     IntPrioritySet(INT_TIMER0A_TM4C123, 0xC0);
     IntEnable(INT_TIMER0A_TM4C123);
+    TimerEnable(TIMER0_BASE, TIMER_A);  // always running
 }
 
 void TIMER0A_Handler(void) {
     TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    // Toggle PN1 at 4kHz ISR rate → 2kHz square wave output
-    static uint8_t phase = 0;
-    phase = !phase;
-    if (phase)
-        GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
-    else
-        GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
+    if (beep_active) {
+        // Toggle PN1 at 4kHz ISR rate → 2kHz square wave output
+        static uint8_t phase = 0;
+        phase = !phase;
+        if (phase)
+            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, BEEPER_PIN);
+        else
+            GPIOPinWrite(BEEPER_PORT, BEEPER_PIN, 0);
+    }
 }
 
 uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {

@@ -238,9 +238,9 @@ static uint8_t scroll_static_timer = 0;    // for ≤8-char static display (1s t
 /************************** LED state **************************/
 volatile uint8_t led_byte = 0x00;          // PCA9557 LED byte
 static uint8_t   led_takeover = 0;         // 1 = *SET:LED override, inhibits auto-LED logic
-static uint8_t   led_heartbeat_timer = 0;  // 100ms ticks for heartbeat toggle
-static uint8_t   uart_tx_timer = 0;        // TX LED blink duration
-static uint8_t   uart_rx_timer = 0;        // RX LED blink duration
+static volatile uint8_t led_heartbeat_timer = 0;  // 100ms ticks for heartbeat toggle
+static volatile uint8_t uart_tx_timer = 0;        // TX LED blink duration (ISR→foreground)
+static volatile uint8_t uart_rx_timer = 0;        // RX LED blink duration (ISR→foreground)
 
 /************************** Weather / NTP state (E1/E2 extensions) **************************/
 static int8_t   weather_temp = -99;        // temperature in Celsius (-99 = no data)
@@ -1780,11 +1780,11 @@ void cmd_ping(void) {
 
 /************************** UART command processor **************************/
 void process_uart_command(void) {
-    uart_cmd_ready = 0;  // clear flag first
-
-    // Lock gate: ISR sees rx_busy=1 and discards chars that arrive before
-    // we finish processing. Combined with volatile i/receive for correctness.
+    // Set gate FIRST: ISR sees rx_busy=1 and discards incoming chars.
+    // Order matters — if uart_cmd_ready is cleared before rx_busy is set,
+    // a UART ISR in between would see rx_busy=0 and write to receive[].
     rx_busy = 1;
+    uart_cmd_ready = 0;  // clear flag AFTER gate is armed
     UARTIntDisable(UART0_BASE, UART_INT_RX | UART_INT_RT);
     strncpy(cmd_parse_buf, (const char *)receive, sizeof(cmd_parse_buf));
     cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';

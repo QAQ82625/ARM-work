@@ -1908,9 +1908,9 @@ void process_uart_command(void) {
 int main(void) {
     volatile uint16_t gpio_flash_cnt;
 
-    // System clock init — use internal oscillator (PIOSC)
+    // System clock init — S800 uses 25MHz external crystal
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
+        (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
         20000000);
 
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);

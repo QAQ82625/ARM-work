@@ -2109,7 +2109,6 @@ void S800_UART_Init(void) {
     GPIOPinConfigure(GPIO_PA1_U0TX);
 
     GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
-    UARTClockSourceSet(UART0_BASE, UART_CLOCK_SYSTEM);
     UARTConfigSetExpClk(UART0_BASE, ui32SysClock, 115200,
         (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
     UARTFIFOLevelSet(UART0_BASE, UART_FIFO_TX6_8, UART_FIFO_RX6_8);
@@ -2321,7 +2320,7 @@ void UART0_Handler(void) {
             receive_overflow = 0;
             i = 0;
             memset((void *)receive, 0, sizeof(receive));
-            UARTStringPut((uint8_t *)"ERROR LINE TOO LONG\r\n");
+            err_line_too_long = 1;  // deferred to foreground, no blocking in ISR
             return;
         }
         if (i > 0) {

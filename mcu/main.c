@@ -1781,13 +1781,10 @@ void cmd_ping(void) {
 void process_uart_command(void) {
     uart_cmd_ready = 0;
 
-    // Copy receive[] safely — disable RX interrupt during the window
-    UARTIntDisable(UART0_BASE, UART_INT_RX | UART_INT_RT);
     strncpy(cmd_parse_buf, (const char *)receive, sizeof(cmd_parse_buf));
     cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';
     memset((void *)receive, 0, sizeof(receive));
     i = 0;
-    UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
 
     // Trim whitespace
     char *p = cmd_parse_buf;
@@ -2263,9 +2260,7 @@ void UART0_Handler(void) {
         // Handle \r\n line ending
         if (ch == '\r') continue;  // skip CR
         if (ch == '\n') {
-            // If foreground hasn't processed the previous command yet,
-            // discard this new line to prevent receive[] corruption.
-            if (uart_cmd_ready) { i = 0; return; }
+            // Complete line received
             if (receive_overflow) {
                 // Line exceeded 64 chars — discard and report
                 receive_overflow = 0;

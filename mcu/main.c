@@ -237,6 +237,7 @@ static uint8_t scroll_static_timer = 0;    // for ≤8-char static display (1s t
 /************************** LED state **************************/
 volatile uint8_t led_byte = 0x00;          // PCA9557 LED byte
 static uint8_t   led_takeover = 0;         // 1 = *SET:LED override, inhibits auto-LED logic
+static uint8_t   ext_led_blink = 0;          // >0: EXT key LED blink pending (100ms ticks)
 static volatile uint8_t led_heartbeat_timer = 0;  // 100ms ticks for heartbeat toggle
 static volatile uint8_t uart_tx_timer = 0;        // TX LED blink duration (ISR→foreground)
 static volatile uint8_t uart_rx_timer = 0;        // RX LED blink duration (ISR→foreground)
@@ -338,7 +339,7 @@ void led_update(void) {
     // If *SET:LED took over, skip all auto-logic — just write led_byte as-is
     if (led_takeover) {
         SysTickIntDisable();
-        while (I2CMasterBusy(I2C0_BASE)) {};
+        { volatile uint32_t _t=0; while (I2CMasterBusy(I2C0_BASE) && ++_t<100000) {}; }
         I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
         SysTickIntEnable();
         return;
@@ -394,6 +395,12 @@ void led_update(void) {
         else
             out &= ~LED_EDIT;
 
+        // EXT key blink feedback (non-blocking, tick-counted here)
+        if (ext_led_blink > 0) {
+            out |= LED_EDIT;   // override EDIT LED on
+            ext_led_blink--;
+        }
+
         // Weather LEDs per spec §11/§15
         if (weather_code == 1 && weather_temp != -99)   // SUN
             out |= LED_SUN;
@@ -417,7 +424,7 @@ void led_update(void) {
     // Write to PCA9557 with SysTick disabled to avoid I2C bus conflict
     // (SysTick ISR also writes to TCA6424 via I2C0 at 1kHz)
     SysTickIntDisable();
-    while (I2CMasterBusy(I2C0_BASE)) {};  // drain in-flight ISR transaction
+    { volatile uint32_t _t=0; while (I2CMasterBusy(I2C0_BASE) && ++_t<100000) {}; }  // drain ISR tx
     I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
     SysTickIntEnable();
 }
@@ -868,7 +875,7 @@ void key_scan(void) {
 
     // Read I2C keys from TCA6424 Port0 (8 keys, active low)
     SysTickIntDisable();
-    while (I2CMasterBusy(I2C0_BASE)) {};  // drain ISR's in-flight transaction
+    { volatile uint32_t _t=0; while (I2CMasterBusy(I2C0_BASE) && ++_t<100000) {}; }  // drain ISR's in-flight transaction
     i2c_keys = I2C0_ReadByte(TCA6424_I2CADDR, TCA6424_INPUT_PORT0);
     SysTickIntEnable();
 
@@ -1040,21 +1047,10 @@ void key_action(uint8_t key_idx, uint8_t long_press) {
                 beep_off();
                 send_response("*EVT:ALARM:SET OFF\r\n");
             }
-            // Brief visual confirmation: blink edit LED once
-            {
-                uint8_t saved = led_byte;
-                led_byte |= LED_EDIT;
-                SysTickIntDisable();
-                while (I2CMasterBusy(I2C0_BASE)) {};
-                I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
-                SysTickIntEnable();
-                Delay(100000);
-                led_byte = saved;
-                SysTickIntDisable();
-                while (I2CMasterBusy(I2C0_BASE)) {};
-                I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
-                SysTickIntEnable();
-            }
+            // Non-blocking visual confirm: trigger LED blink via 100ms tick timer.
+            // No Delay() — the 2-tick timer avoids blocking the main loop and
+            // prevents UART RX FIFO overflow during continuous command testing.
+            ext_led_blink = 3;  // 3 * 100ms ticks: light on for ~300ms
             break;
 
         case 8: // USER1 — NTP sync (PC handles via *EVT:KEY USER1)
@@ -1492,7 +1488,7 @@ void cmd_set_led(const char *params) {
     }
 
     SysTickIntDisable();
-    while (I2CMasterBusy(I2C0_BASE)) {};
+    { volatile uint32_t _t=0; while (I2CMasterBusy(I2C0_BASE) && ++_t<100000) {}; }
     I2C0_WriteByte(PCA9557_I2CADDR, PCA9557_OUTPUT, ~led_byte);
     SysTickIntEnable();
     send_response("OK\r\n");
@@ -2170,16 +2166,20 @@ void Beeper_PWM_Init(void) {
 
 uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {
     uint8_t rop;
-    while (I2CMasterBusy(I2C0_BASE)) {};
+    volatile uint32_t to;
+    to = 0; while (I2CMasterBusy(I2C0_BASE) && ++to < 100000) {};
+    if (to >= 100000) return 0xFF;
     I2CMasterSlaveAddrSet(I2C0_BASE, DevAddr, false);
     I2CMasterDataPut(I2C0_BASE, RegAddr);
     I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
-    while (I2CMasterBusy(I2C0_BASE)) {};
+    to = 0; while (I2CMasterBusy(I2C0_BASE) && ++to < 100000) {};
+    if (to >= 100000) return 0xFF;
     rop = (uint8_t)I2CMasterErr(I2C0_BASE);
 
     I2CMasterDataPut(I2C0_BASE, WriteData);
     I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_FINISH);
-    while (I2CMasterBusy(I2C0_BASE)) {};
+    to = 0; while (I2CMasterBusy(I2C0_BASE) && ++to < 100000) {};
+    if (to >= 100000) return 0xFF;
 
     rop = (uint8_t)I2CMasterErr(I2C0_BASE);
     return rop;
@@ -2187,16 +2187,20 @@ uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {
 
 uint8_t I2C0_ReadByte(uint8_t DevAddr, uint8_t RegAddr) {
     uint8_t value;
-    while (I2CMasterBusy(I2C0_BASE)) {};
+    volatile uint32_t to;
+    to = 0; while (I2CMasterBusy(I2C0_BASE) && ++to < 100000) {};
+    if (to >= 100000) return 0xFF;
     I2CMasterSlaveAddrSet(I2C0_BASE, DevAddr, false);
     I2CMasterDataPut(I2C0_BASE, RegAddr);
     I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_SEND);
-    while (I2CMasterBusBusy(I2C0_BASE));
+    to = 0; while (I2CMasterBusBusy(I2C0_BASE) && ++to < 100000);
+    if (to >= 100000) return 0xFF;
     (void)I2CMasterErr(I2C0_BASE);
     Delay_us(10);
     I2CMasterSlaveAddrSet(I2C0_BASE, DevAddr, true);
     I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);
-    while (I2CMasterBusBusy(I2C0_BASE));
+    to = 0; while (I2CMasterBusBusy(I2C0_BASE) && ++to < 100000);
+    if (to >= 100000) return 0xFF;
     value = I2CMasterDataGet(I2C0_BASE);
     Delay_us(10);
     return value;
@@ -2288,8 +2292,9 @@ void UART0_Handler(void) {
         }
     }
 
-    // Timeout: flush partial buffer (also check overflow)
-    if (uart0_int_status == 0x40) {
+    // Timeout: flush partial buffer (also check overflow).
+    // Use bitwise AND — multiple flags may be set simultaneously (e.g. RX+RT).
+    if (uart0_int_status & 0x40) {
         if (receive_overflow) {
             receive_overflow = 0;
             i = 0;

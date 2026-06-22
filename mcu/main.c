@@ -1896,8 +1896,9 @@ int main(void) {
 
     // 25MHz external crystal → PLL 480MHz → SYSDIV 24 = 20MHz (exact)
     // UART 115200 error: 0.06% vs PIOSC ±3% — eliminates bit corruption
+    // Internal oscillator (PIOSC) — correct SysTick timing on S800 board
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
+        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
         20000000);
 
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);
@@ -2146,22 +2147,32 @@ void S800_I2C0_Init(void) {
 
 /************************** Beeper PWM Init (2kHz on PK5 via M0PWM7) **************************/
 void Beeper_PWM_Init(void) {
-    // Configure PWM0 Gen3 Output7 (PK5) at 2kHz / 50% duty for PS1720P02 passive buzzer.
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_PWM0));
-
+    // Configure PK5 for PWM at 2kHz/50% duty for PS1720P02 passive buzzer.
+    // CRITICAL ORDER: drive LOW as GPIO first → then switch to PWM.
+    // Otherwise the pin floats during the GPIO→PWM mux transition → squeal.
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOK);
     while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOK));
 
-    GPIOPinConfigure(GPIO_PK5_M0PWM7);           // PK5 alternate function = M0PWM7
-    GPIOPinTypePWM(GPIO_PORTK_BASE, GPIO_PIN_5); // set PK5 as PWM pin
+    // Step 1: PK5 as GPIO output, drive LOW (pin is guaranteed silent)
+    GPIOPinTypeGPIOOutput(GPIO_PORTK_BASE, GPIO_PIN_5);
+    GPIOPinWrite(GPIO_PORTK_BASE, GPIO_PIN_5, 0);
 
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_PWM0));
+
+    // Step 2: Configure PWM at 0% duty (still silent even after switch)
     PWMGenConfigure(PWM0_BASE, PWM_GEN_3,
         PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
     PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, ui32SysClock / 2000);  // 2kHz
-    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 0);                    // 0% duty = silent
-    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);               // enable output
-    PWMGenEnable(PWM0_BASE, PWM_GEN_3);   // always running — PK5 never floats
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 0);                    // 0% = silent
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
+
+    // Step 3: Switch PK5 from GPIO to PWM function (pin transitions from LOW GPIO to 0% PWM — no glitch)
+    GPIOPinConfigure(GPIO_PK5_M0PWM7);
+    GPIOPinTypePWM(GPIO_PORTK_BASE, GPIO_PIN_5);
+
+    // Step 4: Start PWM generator — runs forever at 0% until beep_on() raises duty
+    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
 uint8_t I2C0_WriteByte(uint8_t DevAddr, uint8_t RegAddr, uint8_t WriteData) {

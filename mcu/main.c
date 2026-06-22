@@ -1760,13 +1760,30 @@ void cmd_get(const char *params) {
 
     if (*p == '\0' || match_abbrev(p, "TIME")) {
         char resp[48];
-        sprintf(resp, "OK %02d %02d %02d\r\n", hour, minute, second);
+        if (format_direction == 1) {
+            // FORMAT RIGHT: value order reversed AND each 2-digit number digit-reversed
+            uint8_t rh = (hour % 10) * 10 + (hour / 10);
+            uint8_t rm = (minute % 10) * 10 + (minute / 10);
+            uint8_t rs = (second % 10) * 10 + (second / 10);
+            sprintf(resp, "OK %02d.%02d.%02d\r\n", rs, rm, rh);
+        } else {
+            sprintf(resp, "OK %02d.%02d.%02d\r\n", hour, minute, second);
+        }
         send_response(resp);
         return;
     }
     if (match_abbrev(p, "DATE")) {
         char resp[48];
-        sprintf(resp, "OK %04d %02d %02d\r\n", year, month, day);
+        if (format_direction == 1) {
+            uint8_t rd = (day % 10) * 10 + (day / 10);
+            uint8_t rm = (month % 10) * 10 + (month / 10);
+            // 4-digit year digit-reversed: 2026 → 6202
+            uint16_t ry = ((year % 10) * 1000 + ((year/10) % 10) * 100 +
+                           ((year/100) % 10) * 10 + (year / 1000));
+            sprintf(resp, "OK %02d.%02d.%04d\r\n", rd, rm, ry);
+        } else {
+            sprintf(resp, "OK %04d.%02d.%02d\r\n", year, month, day);
+        }
         send_response(resp);
         return;
     }

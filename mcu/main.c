@@ -1225,175 +1225,120 @@ void cmd_rst(const char *params) {
 }
 
 // *SET:DATE YEAR <val> MONTH <val> DATE <val>
+// Also accepts *SET:DATE YEAR MONTH DATE <y> <m> <d> (keywords-first)
 void cmd_set_date(const char *params) {
-    char buf[64], *p, *token;
-    strncpy(buf, params, 64);
-    buf[63] = '\0';
+    char buf[64];
+    strncpy(buf, params, sizeof(buf));
+    buf[sizeof(buf) - 1] = '\0';
 
-    p = buf;
-    int any_set = 0;
-
-    while (*p) {
+    // Gather all tokens and upcase them
+    char *tokens[8]; int ntok = 0;
+    char *p = buf;
+    while (*p && ntok < 8) {
         while (*p == ' ' || *p == '\t') p++;
         if (*p == '\0') break;
-
-        token = p;
+        tokens[ntok] = p;
         while (*p && *p != ' ' && *p != '\t') p++;
-        char saved = *p;
-        *p = '\0';
-
-        // Get value
-        char *val_str = NULL;
-        if (saved != '\0') {
-            p++;
-            while (*p == ' ' || *p == '\t') p++;
-            val_str = p;
-            while (*p && *p != ' ' && *p != '\t') p++;
-            saved = *p;
-            *p = '\0';
-        }
-
-        if (val_str == NULL || val_str[0] == '\0') {
-            send_response("ERROR SYNTAX\r\n");
-            return;
-        }
-
-        int val = atoi(val_str);
-
-        // Uppercase token for matching
-        char *tp = token;
-        while (*tp) { *tp = toupper((unsigned char)*tp); tp++; }
-
-        if (match_abbrev(token, "YEAR")) {
-            if (val < 2025 || val > 2099) {
-                send_response("ERROR RANGE\r\n");
-                return;
-            }
-            year = (uint16_t)val;
-            any_set = 1;
-        } else if (match_abbrev(token, "MONTH")) {
-            if (val < 1 || val > 12) {
-                send_response("ERROR RANGE\r\n");
-                return;
-            }
-            month = (uint8_t)val;
-            any_set = 1;
-        } else if (match_abbrev(token, "DATE")) {
-            if (val < 1 || val > 31) {  // rough check, refined below
-                send_response("ERROR RANGE\r\n");
-                return;
-            }
-            day = (uint8_t)val;
-            any_set = 1;
-        } else {
-            send_response("ERROR SYNTAX\r\n");
-            return;
-        }
-
-        if (saved == '\0') break;
-        *p = saved;
+        if (*p) { *p = '\0'; p++; }
+        ntok++;
+    }
+    // Upcase
+    int i;
+    for (i = 0; i < ntok; i++) {
+        char *s = tokens[i];
+        while (*s) { *s = toupper((unsigned char)*s); s++; }
     }
 
-    // Validate day against month
-    if (day > get_days_in_month(year, month)) {
+    // Match keywords to positions; collect values from remaining positions
+    int yr_val = -1, mo_val = -1, dy_val = -1;
+    int kw_count = 0;
+    for (i = 0; i < ntok; i++) {
+        if (match_abbrev(tokens[i], "YEAR"))  { kw_count++; continue; }
+        if (match_abbrev(tokens[i], "MONTH")) { kw_count++; continue; }
+        if (match_abbrev(tokens[i], "DATE"))  { kw_count++; continue; }
+        // This is a numeric value; assign to first unmatched keyword
+        if (yr_val < 0) yr_val = i;
+        else if (mo_val < 0) mo_val = i;
+        else dy_val = i;
+    }
+    if (kw_count == 0) { send_response("ERROR SYNTAX\r\n"); return; }
+
+    int any_set = 0;
+    if (yr_val >= 0) {
+        int v = atoi(tokens[yr_val]);
+        if (v < 2025 || v > 2099) { send_response("ERROR RANGE\r\n"); return; }
+        year = (uint16_t)v; any_set = 1;
+    }
+    if (mo_val >= 0) {
+        int v = atoi(tokens[mo_val]);
+        if (v < 1 || v > 12) { send_response("ERROR RANGE\r\n"); return; }
+        month = (uint8_t)v; any_set = 1;
+    }
+    if (dy_val >= 0) {
+        int v = atoi(tokens[dy_val]);
+        if (v < 1 || v > 31) { send_response("ERROR RANGE\r\n"); return; }
+        day = (uint8_t)v; any_set = 1;
+    }
+
+    if (day > get_days_in_month(year, month))
         day = get_days_in_month(year, month);
-    }
 
-    if (any_set) {
-        update_display();
-        send_response("OK\r\n");
-    } else {
-        send_response("ERROR SYNTAX\r\n");
-    }
+    if (any_set) { update_display(); send_response("OK\r\n"); }
+    else send_response("ERROR SYNTAX\r\n");
 }
 
-// *SET:TIME HOUR <val> MINute <val> SECond <val>
-// Also: *SET:TIME OFF (turn off time display? Actually OFF is for setting time to 0 or...)
-// From protocol: HOUR/MINUTE/SECOND/OFF — OFF might be a sub-command
+// *SET:TIME HOUR <val> MINute <val> SECond <val> / OFF
+// Also accepts *SET:TIME HOUR MIN SEC <h> <m> <s> (keywords-first)
 void cmd_set_time(const char *params) {
-    char buf[64], *p, *token;
-    strncpy(buf, params, 64);
-    buf[63] = '\0';
+    char buf[64];
+    strncpy(buf, params, sizeof(buf));
+    buf[sizeof(buf) - 1] = '\0';
 
-    p = buf;
-    int any_set = 0;
-
-    while (*p) {
+    // Gather all tokens
+    char *tokens[8]; int ntok = 0;
+    char *p = buf;
+    while (*p && ntok < 8) {
         while (*p == ' ' || *p == '\t') p++;
         if (*p == '\0') break;
-
-        token = p;
+        tokens[ntok] = p;
         while (*p && *p != ' ' && *p != '\t') p++;
-        char saved = *p;
-        *p = '\0';
-
-        // Uppercase token for matching
-        char *tp = token;
-        while (*tp) { *tp = toupper((unsigned char)*tp); tp++; }
-
-        // Get value
-        char *val_str = NULL;
-        if (saved != '\0') {
-            p++;
-            while (*p == ' ' || *p == '\t') p++;
-            val_str = p;
-            while (*p && *p != ' ' && *p != '\t') p++;
-            saved = *p;
-            *p = '\0';
-        }
-
-        if (match_abbrev(token, "OFF")) {
-            // Turn off display?
-            disp_on = 0;
-            update_display();
-            send_response("OK\r\n");
-            return;
-        }
-
-        if (val_str == NULL || val_str[0] == '\0') {
-            send_response("ERROR SYNTAX\r\n");
-            return;
-        }
-
-        int val = atoi(val_str);
-
-        if (match_abbrev(token, "HOUR")) {
-            if (val < 0 || val > 23) {
-                send_response("ERROR RANGE\r\n");
-                return;
-            }
-            hour = (uint8_t)val;
-            any_set = 1;
-        } else if (match_abbrev(token, "MINute")) {
-            if (val < 0 || val > 59) {
-                send_response("ERROR RANGE\r\n");
-                return;
-            }
-            minute = (uint8_t)val;
-            second = 0;  // reset seconds on time set
-            any_set = 1;
-        } else if (match_abbrev(token, "SECond")) {
-            if (val < 0 || val > 59) {
-                send_response("ERROR RANGE\r\n");
-                return;
-            }
-            second = (uint8_t)val;
-            any_set = 1;
-        } else {
-            send_response("ERROR SYNTAX\r\n");
-            return;
-        }
-
-        if (saved == '\0') break;
-        *p = saved;
+        if (*p) { *p = '\0'; p++; }
+        ntok++;
+    }
+    int i;
+    for (i = 0; i < ntok; i++) {
+        char *s = tokens[i];
+        while (*s) { *s = toupper((unsigned char)*s); s++; }
     }
 
-    if (any_set) {
-        update_display();
-        send_response("OK\r\n");
-    } else {
-        send_response("ERROR SYNTAX\r\n");
+    // Check for OFF
+    for (i = 0; i < ntok; i++) {
+        if (match_abbrev(tokens[i], "OFF")) {
+            disp_on = 0; update_display(); send_response("OK\r\n"); return;
+        }
     }
+
+    int h_val = -1, m_val = -1, s_val = -1;
+    for (i = 0; i < ntok; i++) {
+        if (match_abbrev(tokens[i], "HOUR"))   continue;
+        if (match_abbrev(tokens[i], "MINute")) continue;
+        if (match_abbrev(tokens[i], "SECond")) continue;
+        int v = atoi(tokens[i]);
+        if (h_val < 0) h_val = v;
+        else if (m_val < 0) m_val = v;
+        else s_val = v;
+    }
+
+    int any_set = 0;
+    if (h_val >= 0) { if (h_val > 23) { send_response("ERROR RANGE\r\n"); return; }
+        hour = (uint8_t)h_val; any_set = 1; }
+    if (m_val >= 0) { if (m_val > 59) { send_response("ERROR RANGE\r\n"); return; }
+        minute = (uint8_t)m_val; second = 0; any_set = 1; }
+    if (s_val >= 0) { if (s_val > 59) { send_response("ERROR RANGE\r\n"); return; }
+        second = (uint8_t)s_val; any_set = 1; }
+
+    if (any_set) { update_display(); send_response("OK\r\n"); }
+    else send_response("ERROR SYNTAX\r\n");
 }
 
 // *SET:DISPlay ON / OFF
@@ -1461,13 +1406,7 @@ void cmd_set_msg(const char *params) {
     if (len > 32) len = 32;
 
     if (len == 0) {
-        // Empty message → clear scroll
-        memset(scroll_msg, 0, sizeof(scroll_msg));
-        scroll_active = 0;
-        scroll_len = 0;
-        scroll_pos = 0;
-        update_display();
-        send_response("OK\r\n");
+        send_response("ERROR SYNTAX\r\n");
         return;
     }
 
@@ -1621,121 +1560,87 @@ void cmd_set_mode(const char *params) {
 }
 
 // *SET:ALARM [slot] HOUR <val> MINute <val> SECond <val> / OFF / ON
-// slot: MON/TUE/WED/THU/FRI/SAT/SUN/ALL (default=current day)
-// OFF disables current slot; ON enables current slot.
+// Also accepts *SET:ALARM HOUR MIN SEC <h> <m> <s> (keywords-first)
+// slot (optional): MON/TUE/WED/THU/FRI/SAT/SUN/ALL (default=current day)
 void cmd_set_alarm(const char *params) {
-    char buf[64], *p, *token;
+    char buf[64];
     strncpy(buf, params, sizeof(buf));
     buf[sizeof(buf) - 1] = '\0';
 
-    p = buf;
-
-    // Parse first token — check if it's a day-of-week slot
-    while (*p == ' ' || *p == '\t') p++;
-    if (*p == '\0') { send_response("ERROR SYNTAX\r\n"); return; }
-    token = p;
-    while (*p && *p != ' ' && *p != '\t') p++;
-    char saved = *p; *p = '\0';
-    char *tp_up = token;
-    while (*tp_up) { *tp_up = toupper((unsigned char)*tp_up); tp_up++; }
-
-    // Determine target slot index
-    int slot = ALARM_IDX;  // default: current day
-    int check_slot = 1;
-    if (match_abbrev(token, "MONday"))      slot = 0;
-    else if (match_abbrev(token, "TUEsday")) slot = 1;
-    else if (match_abbrev(token, "WEDnesday")) slot = 2;
-    else if (match_abbrev(token, "THUrsday")) slot = 3;
-    else if (match_abbrev(token, "FRIday"))  slot = 4;
-    else if (match_abbrev(token, "SATurday")) slot = 5;
-    else if (match_abbrev(token, "SUNday"))   slot = 6;
-    else if (match_abbrev(token, "ALL"))      slot = -1;  // all slots
-    else {
-        check_slot = 0;  // not a slot name, treat as param token
-        *p = saved; p = buf;  // rewind and parse normally
+    // Gather all tokens and upcase
+    char *tokens[10]; int ntok = 0;
+    char *p = buf;
+    while (*p && ntok < 10) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') break;
+        tokens[ntok] = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (*p) { *p = '\0'; p++; }
+        ntok++;
+    }
+    if (ntok == 0) { send_response("ERROR SYNTAX\r\n"); return; }
+    int i;
+    for (i = 0; i < ntok; i++) {
+        char *s = tokens[i];
+        while (*s) { *s = toupper((unsigned char)*s); s++; }
     }
 
-    if (check_slot) {
-        // Move past the slot token
-        if (saved != '\0') { *p = saved; p++; }
-    }
+    // Check first token for day-of-week slot
+    int slot = ALARM_IDX;  // default=current day
+    int start_i = 0;
+    if (match_abbrev(tokens[0], "MONday"))      { slot = 0; start_i = 1; }
+    else if (match_abbrev(tokens[0], "TUEsday")) { slot = 1; start_i = 1; }
+    else if (match_abbrev(tokens[0], "WEDnesday")){ slot = 2; start_i = 1; }
+    else if (match_abbrev(tokens[0], "THUrsday")) { slot = 3; start_i = 1; }
+    else if (match_abbrev(tokens[0], "FRIday"))  { slot = 4; start_i = 1; }
+    else if (match_abbrev(tokens[0], "SATurday")) { slot = 5; start_i = 1; }
+    else if (match_abbrev(tokens[0], "SUNday"))   { slot = 6; start_i = 1; }
+    else if (match_abbrev(tokens[0], "ALL"))      { slot = -1; start_i = 1; }
 
-    // Parse HOUR/MIN/SEC/OFF/ON parameters
-    int any_set = 0;
     int set_slot_start = (slot == -1) ? 0 : slot;
     int set_slot_end   = (slot == -1) ? ALARM_SLOTS : slot + 1;
 
-    while (1) {
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '\0') break;
-
-        token = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        saved = *p; *p = '\0';
-
-        char *tp = token;
-        while (*tp) { *tp = toupper((unsigned char)*tp); tp++; }
-
-        // OFF / ON
-        if (match_abbrev(token, "OFF")) {
+    // OFF / ON
+    for (i = start_i; i < ntok; i++) {
+        if (match_abbrev(tokens[i], "OFF")) {
             int si;
             for (si = set_slot_start; si < set_slot_end; si++)
                 alarm_enabled_mask &= ~(1 << si);
             alarm_ringing = 0; beep_off();
             send_response("OK\r\n"); return;
         }
-        if (match_abbrev(token, "ON")) {
+        if (match_abbrev(tokens[i], "ON")) {
             int si;
             for (si = set_slot_start; si < set_slot_end; si++)
                 alarm_enabled_mask |= (1 << si);
             send_response("OK\r\n"); return;
         }
-
-        // Get value
-        char *val_str = NULL;
-        if (saved != '\0') { p++; while (*p == ' ' || *p == '\t') p++; val_str = p;
-            while (*p && *p != ' ' && *p != '\t') p++; saved = *p; *p = '\0'; }
-
-        if (val_str == NULL || val_str[0] == '\0') {
-            send_response("ERROR SYNTAX\r\n"); return;
-        }
-
-        int val = atoi(val_str);
-
-        if (match_abbrev(token, "HOUR")) {
-            if (val < 0 || val > 23) { send_response("ERROR RANGE\r\n"); return; }
-            {
-                int si;
-                for (si = set_slot_start; si < set_slot_end; si++)
-                    alarm_hour[si] = (uint8_t)val;
-            }
-            any_set = 1;
-        } else if (match_abbrev(token, "MINute")) {
-            if (val < 0 || val > 59) { send_response("ERROR RANGE\r\n"); return; }
-            {
-                int si;
-                for (si = set_slot_start; si < set_slot_end; si++)
-                    alarm_minute[si] = (uint8_t)val;
-            }
-            any_set = 1;
-        } else if (match_abbrev(token, "SECond")) {
-            if (val < 0 || val > 59) { send_response("ERROR RANGE\r\n"); return; }
-            {
-                int si;
-                for (si = set_slot_start; si < set_slot_end; si++)
-                    alarm_second[si] = (uint8_t)val;
-            }
-            any_set = 1;
-        } else {
-            send_response("ERROR SYNTAX\r\n"); return;
-        }
-
-        if (saved == '\0') break;
-        *p = saved;
     }
 
+    // Identify time values
+    int h_val = -1, m_val = -1, s_val = -1;
+    for (i = start_i; i < ntok; i++) {
+        if (match_abbrev(tokens[i], "HOUR"))   continue;
+        if (match_abbrev(tokens[i], "MINute")) continue;
+        if (match_abbrev(tokens[i], "SECond")) continue;
+        int v = atoi(tokens[i]);
+        if (h_val < 0) h_val = v;
+        else if (m_val < 0) m_val = v;
+        else s_val = v;
+    }
+
+    int any_set = 0;
+    if (h_val >= 0) { if (h_val > 23) { send_response("ERROR RANGE\r\n"); return; }
+        int si; for (si = set_slot_start; si < set_slot_end; si++)
+            alarm_hour[si] = (uint8_t)h_val; any_set = 1; }
+    if (m_val >= 0) { if (m_val > 59) { send_response("ERROR RANGE\r\n"); return; }
+        int si; for (si = set_slot_start; si < set_slot_end; si++)
+            alarm_minute[si] = (uint8_t)m_val; any_set = 1; }
+    if (s_val >= 0) { if (s_val > 59) { send_response("ERROR RANGE\r\n"); return; }
+        int si; for (si = set_slot_start; si < set_slot_end; si++)
+            alarm_second[si] = (uint8_t)s_val; any_set = 1; }
+
     if (any_set) {
-        // setting alarm values auto-enables the slot
         int si;
         for (si = set_slot_start; si < set_slot_end; si++)
             alarm_enabled_mask |= (1 << si);

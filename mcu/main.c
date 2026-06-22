@@ -1774,16 +1774,15 @@ void cmd_ping(void) {
 
 /************************** UART command processor **************************/
 void process_uart_command(void) {
-    // Critical section: disable RX interrupt during copy.
-    // ISR cannot fire, cannot modify receive[]/i/uart_cmd_ready.
-    UARTIntDisable(UART0_BASE, UART_INT_RX | UART_INT_RT);
+    // Atomic copy: disable all interrupts (~2us), read receive[], clear it.
+    // No ISR (UART, SysTick, Timer) can fire during copy.
+    __disable_irq();
     strncpy(cmd_parse_buf, (const char *)receive, sizeof(cmd_parse_buf));
     cmd_parse_buf[sizeof(cmd_parse_buf) - 1] = '\0';
     memset((void *)receive, 0, sizeof(receive));
     i = 0;
     uart_cmd_ready = 0;
-    UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
-    // Window closed — ISR can now safely receive next command
+    __enable_irq();
 
     // Trim whitespace
     char *p = cmd_parse_buf;
@@ -2272,15 +2271,6 @@ void UART0_Handler(void) {
 
     // RX activity → blink LED
     uart_rx_timer = 3;
-
-    // If foreground hasn't processed the previous command yet, discard new chars.
-    // This drops the command cleanly (test_runner sees TIMEOUT) instead of
-    // corrupting receive[] mid-copy (which produces garbled ERROR responses).
-    if (uart_cmd_ready) {
-        while (UARTCharsAvail(UART0_BASE))
-            (void)UARTCharGetNonBlocking(UART0_BASE);
-        return;
-    }
 
     // Read available characters
     while (UARTCharsAvail(UART0_BASE)) {

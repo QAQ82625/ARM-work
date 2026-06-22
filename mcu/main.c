@@ -1900,11 +1900,10 @@ void process_uart_command(void) {
 int main(void) {
     volatile uint16_t gpio_flash_cnt;
 
-    // Use external 25MHz crystal — eliminates PIOSC ±3% baud rate drift.
-    // PLL: 25MHz/5*96=480MHz VCO, /24=20MHz (exact).
-    // UART 115200 IBRD=10 FBRD=54 → 115,273 bps, error 0.06%.
+    // PIOSC 16MHz → PLL 480MHz → /24 = 20MHz. 38400 baud gives
+    // 26μs/bit → PIOSC ±3% → worst-case 0.8μs error << 13μs half-bit.
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
+        (SYSCTL_XTAL_16MHZ | SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480),
         20000000);
 
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);
@@ -2110,7 +2109,7 @@ void S800_UART_Init(void) {
 
     GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
 
-    UARTConfigSetExpClk(UART0_BASE, ui32SysClock, 115200,
+    UARTConfigSetExpClk(UART0_BASE, ui32SysClock, 38400,
         (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
     UARTFIFOLevelSet(UART0_BASE, UART_FIFO_TX6_8, UART_FIFO_RX6_8);
 

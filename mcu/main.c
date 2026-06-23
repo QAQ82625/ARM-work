@@ -50,7 +50,7 @@
 #define DISP_LEN                8
 #define SCROLL_BUF_SIZE         40
 #define KEY_QUEUE_SIZE          16
-#define KEY_DEBOUNCE_MS         40
+#define KEY_DEBOUNCE_MS         20
 #define KEY_LONG_MS             800
 #define KEY_REPEAT_MS           150
 #define LINE_MAX                65
@@ -158,6 +158,7 @@ typedef enum {
 typedef enum {
     STATE_BOOT,
     STATE_CLOCK,
+    STATE_EDIT_DATE_LONG,
     STATE_EDIT_DATE,
     STATE_EDIT_TIME,
     STATE_EDIT_ALARM,
@@ -195,6 +196,7 @@ volatile uint8_t  flag_1s;
 
 uint8_t  disp_buf[DISP_LEN];
 uint8_t  disp_dp[DISP_LEN];
+char     disp_char[DISP_LEN];
 uint8_t  disp_blink_mask;
 uint8_t  disp_on;
 format_t g_format;
@@ -336,18 +338,16 @@ static const char *DOW_NAMES[] = {"","MON","TUE","WED","THU","FRI","SAT","SUN"};
 
 static uint8_t match_abbrev(const char *input, const char *full)
 {
-    int i;
-    int input_len = (int)strlen(input);
-    for (i = 0; i < input_len && full[i]; i++) {
-        if (toupper((unsigned char)input[i]) != toupper((unsigned char)full[i]))
-            return 0;
+    while (*input && *full) {
+        char a = *input, b = *full;
+        if (a >= 'a' && a <= 'z') a -= 32;
+        if (b >= 'a' && b <= 'z') b -= 32;
+        if (a != b) return 0;
+        input++; full++;
     }
-    if (i < input_len) return 0;
-    int min_len = 0;
-    for (i = 0; full[i]; i++) {
-        if (isupper((unsigned char)full[i])) min_len = i + 1;
-    }
-    return input_len >= min_len;
+    if (*input) return 0;
+    while (*full) { if (*full >= 'A' && *full <= 'Z') return 0; full++; }
+    return 1;
 }
 
 /* ================================================================
@@ -411,14 +411,14 @@ static uint8_t Keys_ReadUser(void)
 
 static key_code_t raw_to_keycode(uint8_t raw)
 {
-    if (raw & 0x01) return KEY_FUNC;
-    if (raw & 0x02) return KEY_SHIFT;
-    if (raw & 0x04) return KEY_ADD;
-    if (raw & 0x08) return KEY_SAVE;
-    if (raw & 0x10) return KEY_DISP;
-    if (raw & 0x20) return KEY_SPEED;
-    if (raw & 0x40) return KEY_FORMAT;
-    if (raw & 0x80) return KEY_EXT;
+    if (raw & 0x01) return KEY_ADD;    /* K0 */
+    if (raw & 0x02) return KEY_FUNC;   /* K1 */
+    if (raw & 0x04) return KEY_SHIFT;  /* K2 */
+    if (raw & 0x08) return KEY_SPEED;  /* K3 */
+    if (raw & 0x10) return KEY_SAVE;   /* K4 */
+    if (raw & 0x20) return KEY_FORMAT; /* K5 */
+    if (raw & 0x40) return KEY_DISP;   /* K6 */
+    if (raw & 0x80) return KEY_EXT;    /* K7 */
     return KEY_NONE;
 }
 
@@ -721,8 +721,9 @@ void Display_Init(void)
 {
     uint8_t i;
     for (i = 0; i < DISP_LEN; i++) {
-        disp_buf[i] = 0x00;
-        disp_dp[i]  = 0;
+        disp_buf[i]  = 0x00;
+        disp_dp[i]   = 0;
+        disp_char[i] = ' ';
     }
     disp_blink_mask = 0;
     disp_on = 1;
@@ -733,9 +734,10 @@ void Display_SetStr(const char *s, uint8_t dp_bitmap)
 {
     uint8_t i;
     for (i = 0; i < DISP_LEN; i++) {
-        char ch = (s && s[i]) ? s[i] : '_';
-        disp_buf[i] = seg7_encode(ch);
-        disp_dp[i]  = (dp_bitmap >> (7 - i)) & 0x01;
+        char ch = (s && s[i]) ? s[i] : ' ';
+        disp_char[i] = ch;
+        disp_buf[i]  = seg7_encode(ch);
+        disp_dp[i]   = (dp_bitmap >> (7 - i)) & 0x01;
     }
 }
 
@@ -763,9 +765,10 @@ void Display_Refresh(void)
     seg_data = seg;
     if (dp) seg_data |= 0x80;
 
-    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT2, 0x00);
-    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT1, on ? seg_data : 0x00);
+    /* 消鬼影 + 无闪烁: 清段码 → 切位 → 写新段码 */
+    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT1, 0x00);
     I2C_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT2, on ? disp_bit_mask : 0x00);
+    I2C_WriteByte(TCA6424_I2CADDR, TCA6424_OUTPUT_PORT1, on ? seg_data : 0x00);
 
     disp_cur_digit = (disp_cur_digit + 1) % DISP_LEN;
     disp_bit_mask <<= 1;
@@ -812,43 +815,57 @@ static void Time_Tick(void)
 static void Clock_FormatDisplay(void)
 {
     char str[DISP_LEN + 1];
+    char rev[DISP_LEN + 1];
     uint8_t dp;
+    int8_t i;
 
     if (g_night_mode) {
-        /* Night: only HH.MM */
         str[0] = '0' + (g_time.h / 10);
         str[1] = '0' + (g_time.h % 10);
         str[2] = '0' + (g_time.mi / 10);
         str[3] = '0' + (g_time.mi % 10);
-        str[4] = '_'; str[5] = '_'; str[6] = '_'; str[7] = '_';
+        str[4] = ' '; str[5] = ' '; str[6] = ' '; str[7] = ' ';
         str[DISP_LEN] = '\0';
-        dp = (1 << 5);  /* HH.MM */
+        dp = (1 << 6);  /* HH.MM */
         Display_SetStr(str, dp);
         return;
     }
 
     if (g_disp_mode == DISP_MODE_TIME || g_state == STATE_EDIT_TIME) {
         sprintf(str, "%02d%02d%02d  ", g_time.h, g_time.mi, g_time.s);
-        if (g_format == FMT_RIGHT)
-            dp = (1 << 1) | (1 << 3);
-        else
-            dp = (1 << 2) | (1 << 4);
+        if (g_format == FMT_RIGHT) {
+            for (i = 0; i < DISP_LEN; i++) rev[i] = str[DISP_LEN - 1 - i];
+            rev[DISP_LEN] = '\0';
+            dp = (1 << 4) | (1 << 2);
+            Display_SetStr(rev, dp);
+        } else {
+            dp = (1 << 6) | (1 << 4);
+            Display_SetStr(str, dp);
+        }
     } else if (g_disp_mode == DISP_MODE_DATE_SHORT) {
         sprintf(str, "%02d%02d%02d  ", g_date.y % 100, g_date.m, g_date.d);
-        if (g_format == FMT_RIGHT)
-            dp = (1 << 1) | (1 << 3);
-        else
-            dp = (1 << 2) | (1 << 4);
+        if (g_format == FMT_RIGHT) {
+            for (i = 0; i < DISP_LEN; i++) rev[i] = str[DISP_LEN - 1 - i];
+            rev[DISP_LEN] = '\0';
+            dp = (1 << 4) | (1 << 2);
+            Display_SetStr(rev, dp);
+        } else {
+            dp = (1 << 6) | (1 << 4);
+            Display_SetStr(str, dp);
+        }
     } else {
-        /* DATE_LONG: YYYY.MMDD */
         sprintf(str, "%04d%02d%02d", g_date.y, g_date.m, g_date.d);
-        if (g_format == FMT_RIGHT)
-            dp = (1 << 2) | (1 << 4);
-        else
-            dp = (1 << 3) | (1 << 5);
+        if (g_format == FMT_RIGHT) {
+            for (i = 0; i < DISP_LEN; i++) rev[i] = str[DISP_LEN - 1 - i];
+            rev[DISP_LEN] = '\0';
+            dp = (1 << 6) | (1 << 4);
+            Display_SetStr(rev, dp);
+        } else {
+            dp = (1 << 4) | (1 << 2);
+            Display_SetStr(str, dp);
+        }
     }
     str[DISP_LEN] = '\0';
-    Display_SetStr(str, dp);
 }
 
 /* ================================================================
@@ -872,50 +889,33 @@ void Scroll_Tick(void)
     char str[DISP_LEN + 1];
     uint8_t dp;
     int8_t i;
-    int8_t off;
     int16_t idx;
+    int16_t total_steps;
 
     if (scroll_len == 0) return;
 
-    if (scroll_len <= 8) {
-        /* ≤8 chars: static display, auto-return after 2.5s */
-        static uint8_t static_timer = 0;
-        if (++static_timer >= 25) {
-            static_timer = 0;
-            g_msg_active = 0;
-            g_state = STATE_CLOCK;
-            Clock_FormatDisplay();
-        }
-        Display_SetStr(g_msg_text, 0x00);
-        return;
-    }
+    total_steps = (int16_t)scroll_len + 1;
 
-    off = scroll_off;
     for (i = 0; i < DISP_LEN; i++) {
-        if (scroll_dir == 0) {
-            idx = (int16_t)(off + i);
-        } else {
-            idx = (int16_t)(scroll_len - 1 - off - i);
-        }
-        while (idx < 0) idx += (int16_t)scroll_len;
-        idx = idx % (int16_t)scroll_len;
-        str[i] = scroll_buf[idx];
+        if (scroll_dir == 0)
+            idx = (int16_t)scroll_off + (int16_t)i;
+        else
+            idx = (int16_t)(scroll_len - 1) - (int16_t)scroll_off - (int16_t)i;
+        if (idx >= 0 && idx < (int16_t)scroll_len)
+            str[i] = scroll_buf[idx];
+        else
+            str[i] = ' ';
     }
     str[DISP_LEN] = '\0';
     dp = scroll_dp_bitmap;
     Display_SetStr(str, dp);
 
     scroll_off++;
-    if (scroll_off >= (int8_t)scroll_len) {
+    if (scroll_off >= total_steps) {
         scroll_off = 0;
-        /* Auto-return after 1 full cycle (>8 chars) */
-        static uint8_t cycle_count = 0;
-        if (++cycle_count >= 1) {
-            cycle_count = 0;
-            g_msg_active = 0;
-            g_state = STATE_CLOCK;
-            Clock_FormatDisplay();
-        }
+        g_msg_active = 0;
+        g_state = STATE_CLOCK;
+        Clock_FormatDisplay();
     }
 }
 
@@ -1001,7 +1001,8 @@ static void LED_Update(void)
     }
 
     /* LED2: 编辑模式 */
-    if (g_state == STATE_EDIT_DATE ||
+    if (g_state == STATE_EDIT_DATE_LONG ||
+        g_state == STATE_EDIT_DATE ||
         g_state == STATE_EDIT_TIME ||
         g_state == STATE_EDIT_ALARM) {
         val &= ~LED_EDIT;
@@ -1161,7 +1162,17 @@ void Boot_Sequence(void)
  * 编辑 FSM
  * ================================================================ */
 
-static void Format_DateDisplay(void)
+static void Format_LongDateDisplay(void)
+{
+    char str[DISP_LEN + 1];
+    uint8_t dp;
+    sprintf(str, "%04d%02d%02d", g_date.y, g_date.m, g_date.d);
+    str[DISP_LEN] = '\0';
+    dp = (1 << 4) | (1 << 2);
+    Display_SetStr(str, dp);
+}
+
+static void Format_ShortDateDisplay(void)
 {
     char str[DISP_LEN + 1];
     uint8_t dp;
@@ -1171,12 +1182,10 @@ static void Format_DateDisplay(void)
     str[3] = '0' + (g_date.m % 10);
     str[4] = '0' + (g_date.d / 10);
     str[5] = '0' + (g_date.d % 10);
-    str[6] = '_';
-    str[7] = '_';
+    str[6] = ' ';
+    str[7] = ' ';
     str[DISP_LEN] = '\0';
-    /* 小数点: YY.MM.DD → dp在 bit2和 bit4 (从左边数, 即0x14) */
-    /* MSB=最左位: bit7=pos0, bit6=pos1, ... → pos2=bit5, pos4=bit3 */
-    dp = (1 << 5) | (1 << 3);
+    dp = (1 << 6) | (1 << 4);
     Display_SetStr(str, dp);
 }
 
@@ -1190,10 +1199,10 @@ static void Format_AlarmDisplay(void)
     str[3] = '0' + (g_alarm.t.mi % 10);
     str[4] = '0' + (g_alarm.t.s / 10);
     str[5] = '0' + (g_alarm.t.s % 10);
-    str[6] = '_';
-    str[7] = '_';
+    str[6] = ' ';
+    str[7] = ' ';
     str[DISP_LEN] = '\0';
-    dp = (1 << 5) | (1 << 3);  /* HH.MM.SS → pos2, pos4 */
+    dp = (1 << 6) | (1 << 4);
     Display_SetStr(str, dp);
 }
 
@@ -1204,10 +1213,14 @@ static void Edit_Enter(sys_state_t st)
     edit_modified = 0;
     g_last_activity_ms = g_tick_ms;
 
-    if (st == STATE_EDIT_DATE) {
+    if (st == STATE_EDIT_DATE_LONG) {
         edit_field = EF_YEAR;
-        disp_blink_mask = 0xC0;       /* 闪烁最高两位 = 最左两个数码管(年) */
-        Format_DateDisplay();
+        disp_blink_mask = 0xF0;
+        Format_LongDateDisplay();
+    } else if (st == STATE_EDIT_DATE) {
+        edit_field = EF_YEAR;
+        disp_blink_mask = 0xC0;
+        Format_ShortDateDisplay();
     } else if (st == STATE_EDIT_TIME) {
         edit_field = EF_HOUR;
         disp_blink_mask = 0xC0;
@@ -1237,7 +1250,7 @@ static void Edit_Exit(uint8_t save)
 
     if (save && edit_modified) {
         val = 0;
-        if (g_state == STATE_EDIT_DATE) {
+        if (g_state == STATE_EDIT_DATE_LONG || g_state == STATE_EDIT_DATE) {
             type = "DATE";
             val = g_date.y * 10000 + g_date.m * 100 + g_date.d;
         } else if (g_state == STATE_EDIT_TIME) {
@@ -1274,158 +1287,127 @@ void Edit_HandleKey(key_code_t code, key_event_t evt)
     uint8_t max_pos;
     uint8_t pos_byte;
     uint8_t max_d;
+    uint8_t is_long_date;
 
     if (evt != KEV_DOWN && evt != KEV_LONG) return;
-
     g_last_activity_ms = g_tick_ms;
+    is_long_date = (g_state == STATE_EDIT_DATE_LONG);
 
     switch (code) {
-
     case KEY_FUNC:
-        if (evt == KEV_LONG) {
-            /* 长按: 保存并完全退出 */
-            Edit_Exit(1);
-        } else {
-            /* 短按: 保存当前并切换到下一个编辑模式 */
-            if (edit_modified && g_state == STATE_EDIT_DATE) {
-                /* 日期修改后才上报 */
-                char buf[48];
-                uint16_t val = g_date.y * 10000 + g_date.m * 100 + g_date.d;
-                sprintf(buf, "*EVT:EDIT DATE %u\r\n", val);
+        if (evt == KEV_LONG) { Edit_Exit(1); }
+        else {
+            if (edit_modified && (g_state == STATE_EDIT_DATE_LONG ||
+                                  g_state == STATE_EDIT_DATE)) {
+                char buf[48]; uint16_t v;
+                v = g_date.y * 10000 + g_date.m * 100 + g_date.d;
+                sprintf(buf, "*EVT:EDIT DATE %u\r\n", v);
                 UART_PutStrNB(buf);
             } else if (edit_modified && g_state == STATE_EDIT_TIME) {
-                char buf[48];
-                uint16_t val = g_time.h * 10000 + g_time.mi * 100 + g_time.s;
-                sprintf(buf, "*EVT:EDIT TIME %u\r\n", val);
+                char buf[48]; uint16_t v;
+                v = g_time.h * 10000 + g_time.mi * 100 + g_time.s;
+                sprintf(buf, "*EVT:EDIT TIME %u\r\n", v);
                 UART_PutStrNB(buf);
             } else if (edit_modified && g_state == STATE_EDIT_ALARM) {
-                char buf[48];
-                uint16_t val = g_alarm.t.h * 10000 + g_alarm.t.mi * 100 + g_alarm.t.s;
-                sprintf(buf, "*EVT:EDIT ALARM %u\r\n", val);
+                char buf[48]; uint16_t v;
+                v = g_alarm.t.h * 10000 + g_alarm.t.mi * 100 + g_alarm.t.s;
+                sprintf(buf, "*EVT:EDIT ALARM %u\r\n", v);
                 UART_PutStrNB(buf);
-                /* Sync back to multi-alarm slot */
-                {
-                    uint8_t idx = ALARM_IDX;
-                    if (idx < ALARM_SLOTS) {
-                        g_alarm_slot[idx].h  = g_alarm.t.h;
-                        g_alarm_slot[idx].mi = g_alarm.t.mi;
-                        g_alarm_slot[idx].s  = g_alarm.t.s;
-                    }
+                { uint8_t idx = ALARM_IDX;
+                  if (idx < ALARM_SLOTS) {
+                    g_alarm_slot[idx].h = g_alarm.t.h;
+                    g_alarm_slot[idx].mi = g_alarm.t.mi;
+                    g_alarm_slot[idx].s = g_alarm.t.s; }
                 }
             }
             edit_modified = 0;
-            if (g_state == STATE_EDIT_DATE) {
-                Edit_Enter(STATE_EDIT_TIME);
-            } else if (g_state == STATE_EDIT_TIME) {
-                Edit_Enter(STATE_EDIT_ALARM);
-            } else {
-                /* 从 ALARM 回到 CLOCK */
-                g_state = STATE_CLOCK;
-                disp_blink_mask = 0;
-                g_edit_pos = 0;
-                Clock_FormatDisplay();
-            }
+            if (g_state == STATE_EDIT_DATE_LONG) Edit_Enter(STATE_EDIT_DATE);
+            else if (g_state == STATE_EDIT_DATE) Edit_Enter(STATE_EDIT_TIME);
+            else if (g_state == STATE_EDIT_TIME) Edit_Enter(STATE_EDIT_ALARM);
+            else { g_state = STATE_CLOCK; disp_blink_mask = 0; g_edit_pos = 0; Clock_FormatDisplay(); }
         }
         break;
 
     case KEY_SHIFT:
-        /* 6 位 (YYMMDD 或 HHMMSS)，两位一组 */
-        max_pos = 6;
-        g_edit_pos = (g_edit_pos + 1) % max_pos;
-        pos_byte = g_edit_pos / 2;
-        /* 闪烁对应两位: pos_byte=0→高两位(位置0-1), 1→中两位(2-3), 2→低两位(4-5) */
-        disp_blink_mask = (uint8_t)(0xC0 >> (pos_byte * 2));
-
-        /* 根据当前编辑状态映射字段 */
-        if (g_state == STATE_EDIT_DATE) {
-            if (pos_byte == 0)      edit_field = EF_YEAR;
-            else if (pos_byte == 1) edit_field = EF_MONTH;
-            else                    edit_field = EF_DAT;
+        if (is_long_date) {
+            max_pos = 3;
+            g_edit_pos = (g_edit_pos + 1) % max_pos;
+            if (g_edit_pos == 0)      { disp_blink_mask = 0xF0; edit_field = EF_YEAR; }
+            else if (g_edit_pos == 1) { disp_blink_mask = 0x0C; edit_field = EF_MONTH; }
+            else                      { disp_blink_mask = 0x03; edit_field = EF_DAT; }
         } else {
-            /* TIME 或 ALARM */
-            if (pos_byte == 0)      edit_field = EF_HOUR;
-            else if (pos_byte == 1) edit_field = EF_MINUTE;
-            else                    edit_field = EF_SECOND;
+            max_pos = 6;
+            g_edit_pos = (g_edit_pos + 1) % max_pos;
+            pos_byte = g_edit_pos / 2;
+            disp_blink_mask = (uint8_t)(0xC0 >> (pos_byte * 2));
+            if (g_state == STATE_EDIT_DATE) {
+                if (pos_byte == 0) edit_field = EF_YEAR;
+                else if (pos_byte == 1) edit_field = EF_MONTH;
+                else edit_field = EF_DAT;
+            } else {
+                if (pos_byte == 0) edit_field = EF_HOUR;
+                else if (pos_byte == 1) edit_field = EF_MINUTE;
+                else edit_field = EF_SECOND;
+            }
         }
         break;
 
     case KEY_ADD:
         edit_modified = 1;
-        switch (edit_field) {
-            case EF_YEAR:
-                g_date.y++;
-                if (g_date.y > 2099) g_date.y = 2026;
-                Format_DateDisplay();
-                break;
-            case EF_MONTH:
-                g_date.m++;
-                if (g_date.m > 12) g_date.m = 1;
-                Format_DateDisplay();
-                break;
-            case EF_DAT:
-                max_d = days_in_month[g_date.m - 1];
-                if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
-                g_date.d++;
-                if (g_date.d > max_d) g_date.d = 1;
-                Format_DateDisplay();
-                break;
-            case EF_HOUR:
-                if (g_state == STATE_EDIT_TIME || g_state == STATE_EDIT_DATE) {
-                    g_time.h++;
-                    if (g_time.h >= 24) g_time.h = 0;
-                    Clock_FormatDisplay();
-                } else {
-                    g_alarm.t.h++;
-                    if (g_alarm.t.h >= 24) g_alarm.t.h = 0;
-                    Format_AlarmDisplay();
-                }
-                break;
-            case EF_MINUTE:
-                if (g_state == STATE_EDIT_TIME || g_state == STATE_EDIT_DATE) {
-                    g_time.mi++;
-                    if (g_time.mi >= 60) g_time.mi = 0;
-                    Clock_FormatDisplay();
-                } else {
-                    g_alarm.t.mi++;
-                    if (g_alarm.t.mi >= 60) g_alarm.t.mi = 0;
-                    Format_AlarmDisplay();
-                }
-                break;
-            case EF_SECOND:
-                if (g_state == STATE_EDIT_TIME || g_state == STATE_EDIT_DATE) {
-                    g_time.s++;
-                    if (g_time.s >= 60) g_time.s = 0;
-                    Clock_FormatDisplay();
-                } else {
-                    g_alarm.t.s++;
-                    if (g_alarm.t.s >= 60) g_alarm.t.s = 0;
-                    Format_AlarmDisplay();
-                }
-                break;
-            default: break;
+        if (is_long_date && edit_field == EF_YEAR) {
+            g_date.y++; if (g_date.y > 2099) g_date.y = 2026;
+            Format_LongDateDisplay();
+        } else {
+            switch (edit_field) {
+                case EF_YEAR:
+                    g_date.y++; if (g_date.y > 2099) g_date.y = 2026;
+                    Format_ShortDateDisplay(); break;
+                case EF_MONTH:
+                    g_date.m++; if (g_date.m > 12) g_date.m = 1;
+                    if (is_long_date) Format_LongDateDisplay();
+                    else Format_ShortDateDisplay(); break;
+                case EF_DAT:
+                    max_d = days_in_month[g_date.m - 1];
+                    if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
+                    g_date.d++; if (g_date.d > max_d) g_date.d = 1;
+                    if (is_long_date) Format_LongDateDisplay();
+                    else Format_ShortDateDisplay(); break;
+                case EF_HOUR:
+                    if (g_state == STATE_EDIT_TIME) { g_time.h++; if (g_time.h >= 24) g_time.h = 0; Clock_FormatDisplay(); }
+                    else { g_alarm.t.h++; if (g_alarm.t.h >= 24) g_alarm.t.h = 0; Format_AlarmDisplay(); }
+                    break;
+                case EF_MINUTE:
+                    if (g_state == STATE_EDIT_TIME) { g_time.mi++; if (g_time.mi >= 60) g_time.mi = 0; Clock_FormatDisplay(); }
+                    else { g_alarm.t.mi++; if (g_alarm.t.mi >= 60) g_alarm.t.mi = 0; Format_AlarmDisplay(); }
+                    break;
+                case EF_SECOND:
+                    if (g_state == STATE_EDIT_TIME) { g_time.s++; if (g_time.s >= 60) g_time.s = 0; Clock_FormatDisplay(); }
+                    else { g_alarm.t.s++; if (g_alarm.t.s >= 60) g_alarm.t.s = 0; Format_AlarmDisplay(); }
+                    break;
+                default: break;
+            }
         }
         break;
 
     case KEY_SAVE:
-        if (evt == KEV_LONG) {
-            Edit_Exit(1);
-        }
+        if (evt == KEV_LONG) Edit_Exit(1);
         break;
-
-    default:
-        break;
+    default: break;
     }
 }
-
-/* ================================================================
- * 命令解析 (full protocol: 14 commands + abbreviation + space tolerance)
- * ================================================================ */
 #define MATCH_CMD(tok, full, minlen) \
     ((int)strlen(tok) >= (minlen) && strncmp(tok, full, (size_t)(minlen)) == 0)
 
+static char *skip_to_next(char *s)
+{
+    while (*s != '\0' && *s != ' ') s++;
+    while (*s == ' ') s++;
+    return s;
+}
+
 void ProcessCommand(char *cmd)
 {
-    char *p, *params;
+    char *p;
 
     if (cmd[0] == '\0') return;
 
@@ -1445,12 +1427,18 @@ void ProcessCommand(char *cmd)
             g_time.h = 0; g_time.mi = 0; g_time.s = 0;
             g_date.y = 2026; g_date.m = 6; g_date.d = 15; g_date.wday = 1;
             g_format = FMT_LEFT;
+            scroll_dir = 0;
+            scroll_speed = 0;
             disp_on = 1;
             g_disp_mode = DISP_MODE_TIME;
+            g_night_mode = 0;
+            g_mode_day = 1;
             g_state   = STATE_CLOCK;
             disp_blink_mask = 0;
             g_led_override = 0;
             g_msg_active   = 0;
+            scroll_len    = 0;
+            scroll_buf[0] = '\0';
             g_scroll_speed_level = 0;
             g_alarm_beep_active = 0;
             remote_beep_active  = 0;
@@ -1496,179 +1484,259 @@ void ProcessCommand(char *cmd)
         p = cmd + 5;
         while (*p == ' ') p++;  /* skip space between *SET: and sub-command */
 
-        /* *SET:DATE */
+        /* *SET:DATE — keyword-aware + stable parser */
         if (MATCH_CMD(p, "DATE", 4)) {
-            char *tokens[8]; int ntok = 0;
-            char tbuf[64]; strncpy(tbuf, p + 4, 60); tbuf[59] = '\0';
-            params = tbuf;
-            while (*params == ' ') params++;
-            char *tp = params;
-            while (*tp && ntok < 8) {
-                while (*tp == ' ') tp++;
-                if (*tp == '\0') break;
-                tokens[ntok++] = tp;
-                while (*tp && *tp != ' ') tp++;
-                if (*tp) { *tp = '\0'; tp++; }
+            char  *t;
+            char   wbuf[8];
+            int    wi;
+            int    vals[3];
+            int    nv;
+            int    kmap;
+            int    yr_val;
+            int    mo_val;
+            int    dy_val;
+            int    vi;
+            int    any;
+            uint8_t max_d;
+
+            t = (char *)(p + 4);
+            kmap = 0;
+            nv   = 0;
+            vals[0] = -1; vals[1] = -1; vals[2] = -1;
+
+            while (*t) {
+                while (*t == ' ') t++;
+                if (!*t) break;
+                if (*t >= '0' && *t <= '9') {
+                    if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
+                    else { while (*t != '\0' && *t != ' ') t++; }
+                    continue;
+                }
+                wi = 0;
+                while (*t != '\0' && *t != ' ' && wi < 7) { wbuf[wi++] = *t; t++; }
+                wbuf[wi] = '\0';
+                if (match_abbrev(wbuf, "YEAR"))       kmap |= 1;
+                else if (match_abbrev(wbuf, "MONTH"))  kmap |= 2;
+                else if (match_abbrev(wbuf, "DATE"))   kmap |= 4;
+                else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             }
-            int i;
-            for (i = 0; i < ntok; i++) {
-                char *s = tokens[i];
-                while (*s) { *s = toupper((unsigned char)*s); s++; }
+            if (nv == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+
+            yr_val = -1; mo_val = -1; dy_val = -1;
+            vi = 0;
+            if (kmap & 1 && vi < nv) yr_val = vals[vi++];
+            if (kmap & 2 && vi < nv) mo_val = vals[vi++];
+            if (kmap & 4 && vi < nv) dy_val = vals[vi++];
+            while (vi < nv) {
+                if (yr_val < 0) yr_val = vals[vi];
+                else if (mo_val < 0) mo_val = vals[vi];
+                else if (dy_val < 0) dy_val = vals[vi];
+                vi++;
             }
-            int yr_val = -1, mo_val = -1, dy_val = -1;
-            int val_idx = 0;
-            int vals[4] = {-1,-1,-1,-1};
-            for (i = 0; i < ntok; i++) {
-                if (match_abbrev(tokens[i], "YEAR"))  continue;
-                if (match_abbrev(tokens[i], "MONTH")) continue;
-                if (match_abbrev(tokens[i], "DATE"))  continue;
-                if (val_idx < 4) vals[val_idx++] = atoi(tokens[i]);
-            }
-            val_idx = 0;
-            for (i = 0; i < ntok; i++) {
-                if (match_abbrev(tokens[i], "YEAR")  && val_idx < 4) yr_val = vals[val_idx++];
-                if (match_abbrev(tokens[i], "MONTH") && val_idx < 4) mo_val = vals[val_idx++];
-                if (match_abbrev(tokens[i], "DATE")  && val_idx < 4) dy_val = vals[val_idx++];
-            }
-            int any = 0;
+
+            any = 0;
             if (yr_val >= 0) {
-                if (yr_val < 2025 || yr_val > 2099) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                if (yr_val < 2025 || yr_val > 2099)
+                    { UART_PutStrNB("ERROR RANGE\r\n"); return; }
                 g_date.y = (uint16_t)yr_val; any = 1;
             }
             if (mo_val >= 0) {
-                if (mo_val < 1 || mo_val > 12) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                if (mo_val < 1 || mo_val > 12)
+                    { UART_PutStrNB("ERROR RANGE\r\n"); return; }
                 g_date.m = (uint8_t)mo_val; any = 1;
             }
             if (dy_val >= 0) {
-                if (dy_val < 1 || dy_val > 31) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                if (dy_val < 1 || dy_val > 31)
+                    { UART_PutStrNB("ERROR RANGE\r\n"); return; }
                 g_date.d = (uint8_t)dy_val; any = 1;
             }
             if (!any) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
-            {
-                uint8_t max_d = days_in_month[g_date.m - 1];
-                if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
-                if (g_date.d > max_d) g_date.d = max_d;
-            }
+            max_d = days_in_month[g_date.m - 1];
+            if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
+            if (g_date.d > max_d) g_date.d = max_d;
             UART_PutStrNB("OK\r\n");
             return;
         }
 
-        /* *SET:TIME */
+        /* *SET:TIME — keyword-aware + stable parser */
         if (MATCH_CMD(p, "TIME", 4)) {
-            char *tokens[8]; int ntok = 0;
-            char tbuf[64]; strncpy(tbuf, p + 4, 60); tbuf[59] = '\0';
-            params = tbuf;
-            while (*params == ' ') params++;
-            char *tp = params;
-            while (*tp && ntok < 8) {
-                while (*tp == ' ') tp++;
-                if (*tp == '\0') break;
-                tokens[ntok++] = tp;
-                while (*tp && *tp != ' ') tp++;
-                if (*tp) { *tp = '\0'; tp++; }
-            }
-            int i;
-            for (i = 0; i < ntok; i++) {
-                char *s = tokens[i];
-                while (*s) { *s = toupper((unsigned char)*s); s++; }
-            }
-            for (i = 0; i < ntok; i++) {
-                if (match_abbrev(tokens[i], "OFF")) { disp_on = 0; UART_PutStrNB("OK\r\n"); return; }
-            }
-            int h_val = -1, m_val = -1, s_val = -1;
-            for (i = 0; i < ntok; i++) {
-                if (match_abbrev(tokens[i], "HOUR"))   continue;
-                if (match_abbrev(tokens[i], "MINute")) continue;
-                if (match_abbrev(tokens[i], "SECond")) continue;
-                int v = atoi(tokens[i]);
-                if (h_val < 0) h_val = v;
-                else if (m_val < 0) m_val = v;
-                else s_val = v;
-            }
-            if (h_val >= 0) { if (h_val > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.h = (uint8_t)h_val; }
-            if (m_val >= 0) { if (m_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.mi = (uint8_t)m_val; g_time.s = 0; }
-            if (s_val >= 0) { if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.s = (uint8_t)s_val; }
-            UART_PutStrNB("OK\r\n");
-            return;
-        }
+            char  *t;
+            char   wbuf[8];
+            int    wi;
+            int    vals[3];
+            int    nv;
+            int    kmap;
+            int    h_val;
+            int    m_val;
+            int    s_val;
+            int    vi;
 
-        /* *SET:ALARM */
-        if (MATCH_CMD(p, "ALARM", 5)) {
-            char *tokens[10]; int ntok = 0;
-            char tbuf[64]; strncpy(tbuf, p + 5, 60); tbuf[59] = '\0';
-            params = tbuf;
-            while (*params == ' ') params++;
-            char *tp = params;
-            while (*tp && ntok < 10) {
-                while (*tp == ' ') tp++;
-                if (*tp == '\0') break;
-                tokens[ntok++] = tp;
-                while (*tp && *tp != ' ') tp++;
-                if (*tp) { *tp = '\0'; tp++; }
+            t = (char *)(p + 4);
+            while (*t == ' ') t++;
+            if ((t[0] == 'O' || t[0] == 'o') &&
+                (t[1] == 'F' || t[1] == 'f') &&
+                (t[2] == 'F' || t[2] == 'f')) {
+                disp_on = 0;
+                UART_PutStrNB("OK\r\n"); return;
             }
-            if (ntok == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
-            int i;
-            for (i = 0; i < ntok; i++) {
-                char *s = tokens[i];
-                while (*s) { *s = toupper((unsigned char)*s); s++; }
-            }
-            int slot = (int)ALARM_IDX;
-            int start_i = 0;
-            if (match_abbrev(tokens[0], "MONday"))      { slot = 0; start_i = 1; }
-            else if (match_abbrev(tokens[0], "TUEsday")) { slot = 1; start_i = 1; }
-            else if (match_abbrev(tokens[0], "WEDnesday")){ slot = 2; start_i = 1; }
-            else if (match_abbrev(tokens[0], "THUrsday")) { slot = 3; start_i = 1; }
-            else if (match_abbrev(tokens[0], "FRIday"))  { slot = 4; start_i = 1; }
-            else if (match_abbrev(tokens[0], "SATurday")) { slot = 5; start_i = 1; }
-            else if (match_abbrev(tokens[0], "SUNday"))   { slot = 6; start_i = 1; }
-            else if (match_abbrev(tokens[0], "ALL"))      { slot = -1; start_i = 1; }
-            int ss = (slot == -1) ? 0 : slot;
-            int se = (slot == -1) ? ALARM_SLOTS : slot + 1;
-            for (i = start_i; i < ntok; i++) {
-                if (match_abbrev(tokens[i], "OFF")) {
-                    int si;
-                    for (si = ss; si < se; si++) g_alarm_slot_enabled_mask &= ~(1 << si);
-                    g_alarm_beep_active = 0;
-                    UART_PutStrNB("OK\r\n"); return;
+
+            kmap = 0;
+            nv   = 0;
+            vals[0] = -1; vals[1] = -1; vals[2] = -1;
+            while (*t) {
+                while (*t == ' ') t++;
+                if (!*t) break;
+                if (*t >= '0' && *t <= '9') {
+                    if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
+                    else { while (*t != '\0' && *t != ' ') t++; }
+                    continue;
                 }
-                if (match_abbrev(tokens[i], "ON")) {
-                    int si;
-                    for (si = ss; si < se; si++) g_alarm_slot_enabled_mask |= (1 << si);
-                    UART_PutStrNB("OK\r\n"); return;
-                }
+                wi = 0;
+                while (*t != '\0' && *t != ' ' && wi < 7) { wbuf[wi++] = *t; t++; }
+                wbuf[wi] = '\0';
+                if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
+                else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
+                else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
+                else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             }
-            int h_val = -1, m_val = -1, s_val = -1;
-            for (i = start_i; i < ntok; i++) {
-                if (match_abbrev(tokens[i], "HOUR"))   continue;
-                if (match_abbrev(tokens[i], "MINute")) continue;
-                if (match_abbrev(tokens[i], "SECond")) continue;
-                int v = atoi(tokens[i]);
-                if (h_val < 0) h_val = v;
-                else if (m_val < 0) m_val = v;
-                else s_val = v;
+
+            h_val = -1; m_val = -1; s_val = -1;
+            vi = 0;
+            if (kmap & 1 && vi < nv) h_val = vals[vi++];
+            if (kmap & 2 && vi < nv) m_val = vals[vi++];
+            if (kmap & 4 && vi < nv) s_val = vals[vi++];
+            while (vi < nv) {
+                if (h_val < 0) h_val = vals[vi];
+                else if (m_val < 0) m_val = vals[vi];
+                else if (s_val < 0) s_val = vals[vi];
+                vi++;
             }
+
             if (h_val >= 0) {
                 if (h_val > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                int si;
+                g_time.h = (uint8_t)h_val;
+            }
+            if (m_val >= 0) {
+                if (m_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                g_time.mi = (uint8_t)m_val;
+                if (s_val < 0) g_time.s = 0;
+            }
+            if (s_val >= 0) {
+                if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                g_time.s = (uint8_t)s_val;
+            }
+            UART_PutStrNB("OK\r\n");
+            return;
+        }
+
+        /* *SET:ALARM — keyword-aware + stable parser */
+        if (MATCH_CMD(p, "ALARM", 5)) {
+            char  *t;
+            char   wbuf[8];
+            int    wi;
+            int    vals[3];
+            int    nv;
+            int    kmap;
+            int    h_val;
+            int    m_val;
+            int    s_val;
+            int    vi;
+            int    si;
+            int    ss;
+            int    se;
+
+            t = (char *)(p + 5);
+            while (*t == ' ') t++;
+
+            ss = (int)ALARM_IDX;
+            se = ss + 1;
+
+            {
+                char *ck = t;
+                while (*ck == ' ') ck++;
+                wi = 0;
+                while (*ck != '\0' && *ck != ' ' && wi < 7) { wbuf[wi++] = *ck; ck++; }
+                wbuf[wi] = '\0';
+                if      (match_abbrev(wbuf, "MONday"))    { ss = 0; se = 1; t = ck; }
+                else if (match_abbrev(wbuf, "TUEsday"))   { ss = 1; se = 1; t = ck; }
+                else if (match_abbrev(wbuf, "WEDnesday")) { ss = 2; se = 1; t = ck; }
+                else if (match_abbrev(wbuf, "THUrsday"))  { ss = 3; se = 1; t = ck; }
+                else if (match_abbrev(wbuf, "FRIday"))    { ss = 4; se = 1; t = ck; }
+                else if (match_abbrev(wbuf, "SATurday"))  { ss = 5; se = 1; t = ck; }
+                else if (match_abbrev(wbuf, "SUNday"))    { ss = 6; se = 1; t = ck; }
+                else if (match_abbrev(wbuf, "ALL"))       { ss = 0; se = ALARM_SLOTS; t = ck; }
+            }
+
+            {
+                char *ck = t;
+                while (*ck == ' ') ck++;
+                if ((ck[0] == 'O' || ck[0] == 'o')) {
+                    if ((ck[1] == 'N' || ck[1] == 'n')) {
+                        for (si = ss; si < se; si++)
+                            g_alarm_slot_enabled_mask |= (1U << si);
+                        UART_PutStrNB("OK\r\n"); return;
+                    }
+                    if ((ck[1] == 'F' || ck[1] == 'f') &&
+                        (ck[2] == 'F' || ck[2] == 'f')) {
+                        for (si = ss; si < se; si++)
+                            g_alarm_slot_enabled_mask &= ~(1U << si);
+                        g_alarm_beep_active = 0;
+                        UART_PutStrNB("OK\r\n"); return;
+                    }
+                }
+            }
+
+            kmap = 0;
+            nv   = 0;
+            vals[0] = -1; vals[1] = -1; vals[2] = -1;
+            while (*t) {
+                while (*t == ' ') t++;
+                if (!*t) break;
+                if (*t >= '0' && *t <= '9') {
+                    if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
+                    else { while (*t != '\0' && *t != ' ') t++; }
+                    continue;
+                }
+                wi = 0;
+                while (*t != '\0' && *t != ' ' && wi < 7) { wbuf[wi++] = *t; t++; }
+                wbuf[wi] = '\0';
+                if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
+                else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
+                else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
+                else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            }
+
+            h_val = -1; m_val = -1; s_val = -1;
+            vi = 0;
+            if (kmap & 1 && vi < nv) h_val = vals[vi++];
+            if (kmap & 2 && vi < nv) m_val = vals[vi++];
+            if (kmap & 4 && vi < nv) s_val = vals[vi++];
+            while (vi < nv) {
+                if (h_val < 0) h_val = vals[vi];
+                else if (m_val < 0) m_val = vals[vi];
+                else if (s_val < 0) s_val = vals[vi];
+                vi++;
+            }
+
+            if (h_val >= 0) {
+                if (h_val > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
                 for (si = ss; si < se; si++) {
                     g_alarm_slot[si].h = (uint8_t)h_val;
-                    g_alarm_slot_enabled_mask |= (1 << si);
+                    g_alarm_slot_enabled_mask |= (1U << si);
                 }
             }
             if (m_val >= 0) {
                 if (m_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                int si;
                 for (si = ss; si < se; si++) {
                     g_alarm_slot[si].mi = (uint8_t)m_val;
-                    g_alarm_slot_enabled_mask |= (1 << si);
+                    g_alarm_slot_enabled_mask |= (1U << si);
                 }
             }
             if (s_val >= 0) {
                 if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                int si;
                 for (si = ss; si < se; si++) {
                     g_alarm_slot[si].s = (uint8_t)s_val;
-                    g_alarm_slot_enabled_mask |= (1 << si);
+                    g_alarm_slot_enabled_mask |= (1U << si);
                 }
             }
             UART_PutStrNB("OK\r\n");
@@ -1677,7 +1745,7 @@ void ProcessCommand(char *cmd)
 
         /* *SET:DISPlay ON/OFF */
         if (MATCH_CMD(p, "DISPLAY", 4) || MATCH_CMD(p, "DISP", 4)) {
-            while (*p && *p != ' ') p++;
+            p = skip_to_next(p);
             while (*p == ' ') p++;
             if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0)
                 { disp_on = 1; UART_PutStrNB("OK\r\n"); return; }
@@ -1688,20 +1756,21 @@ void ProcessCommand(char *cmd)
 
         /* *SET:FORMAT LEFT/RIGHT */
         if (MATCH_CMD(p, "FORMAT", 6)) {
-            while (*p && *p != ' ') p++;
+            p = skip_to_next(p);
             while (*p == ' ') p++;
-            if (strncmp(p, "LEFT", 4) == 0)  { g_format = FMT_LEFT;  UART_PutStrNB("OK\r\n"); return; }
-            if (strncmp(p, "RIGHT", 5) == 0) { g_format = FMT_RIGHT; UART_PutStrNB("OK\r\n"); return; }
+            if (strncmp(p, "LEFT", 4) == 0)  { g_format = FMT_LEFT;  scroll_dir = 0; UART_PutStrNB("OK\r\n"); return; }
+            if (strncmp(p, "RIGHT", 5) == 0) { g_format = FMT_RIGHT; scroll_dir = 1; UART_PutStrNB("OK\r\n"); return; }
             UART_PutStrNB("ERROR PARAM\r\n"); return;
         }
 
-        /* *SET:MSG — ExtractLine preserves original case for MSG lines */
         if (MATCH_CMD(p, "MSG", 3)) {
-            /* Text follows "MSG" in cmd_line (ExtractLine keeps case+spaces) */
-            char *msg_text = p + 3;
+            char   *msg_text;
+            uint8_t len;
+
+            msg_text = p + 3;
             while (*msg_text == ' ') msg_text++;
             if (*msg_text == '\0') { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
-            uint8_t len = (uint8_t)strlen(msg_text);
+            len = (uint8_t)strlen(msg_text);
             if (len > 32) len = 32;
             memcpy(g_msg_text, msg_text, len);
             g_msg_text[len] = '\0';
@@ -1709,6 +1778,7 @@ void ProcessCommand(char *cmd)
             g_msg_active = 1;
             g_msg_end_ms = g_tick_ms + 3000;
             if (len <= 8) {
+                scroll_len = 0; scroll_buf[0] = '\0';
                 Display_SetStr(g_msg_text, 0x00);
                 g_state = STATE_MSG_STATIC;
             } else {
@@ -1721,7 +1791,7 @@ void ProcessCommand(char *cmd)
 
         /* *SET:BEEP 10-5000 */
         if (MATCH_CMD(p, "BEEP", 4)) {
-            while (*p && *p != ' ') p++;
+            p = skip_to_next(p);
             while (*p == ' ') p++;
             uint16_t ms = (uint16_t)atoi(p);
             if (ms < 10 || ms > 5000) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
@@ -1733,12 +1803,22 @@ void ProcessCommand(char *cmd)
 
         /* *SET:LED <hex2> */
         if (MATCH_CMD(p, "LED", 3)) {
-            while (*p && *p != ' ') p++;
+            char   *ep;
+            uint8_t val;
+            p = skip_to_next(p);
             while (*p == ' ') p++;
             if (*p == '\0') { UART_PutStrNB("ERROR PARAM\r\n"); return; }
-            int v;
-            if (sscanf(p, "%x", &v) != 1) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
-            g_led_value = (uint8_t)(v & 0xFF);
+            val = 0; ep = p;
+            while (*ep) {
+                char ch = *ep; val <<= 4;
+                if      (ch >= '0' && ch <= '9') val |= (uint8_t)(ch - '0');
+                else if (ch >= 'A' && ch <= 'F') val |= (uint8_t)(ch - 'A' + 10);
+                else if (ch >= 'a' && ch <= 'f') val |= (uint8_t)(ch - 'a' + 10);
+                else break;
+                ep++;
+            }
+            if (ep == p) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
+            g_led_value = val;
             g_led_override = (g_led_value != 0);
             UART_PutStrNB("OK\r\n");
             return;
@@ -1746,7 +1826,7 @@ void ProcessCommand(char *cmd)
 
         /* *SET:KEY <NAME> */
         if (MATCH_CMD(p, "KEY", 3)) {
-            while (*p && *p != ' ') p++;
+            p = skip_to_next(p);
             while (*p == ' ') p++;
             key_code_t kc = KEY_NONE;
             if (strncmp(p, "FUNC", 4) == 0 || strncmp(p, "func", 4) == 0)   kc = KEY_FUNC;
@@ -1762,30 +1842,31 @@ void ProcessCommand(char *cmd)
             if (kc == KEY_NONE) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
             g_suppress_key_evt = 1;
             KeyQueue_Push(kc, KEV_DOWN);
-            g_suppress_key_evt = 0;
             UART_PutStrNB("OK\r\n");
             return;
         }
 
         /* *SET:MODE DAY/NIGHT */
         if (MATCH_CMD(p, "MODE", 4)) {
-            while (*p && *p != ' ') p++;
+            p = skip_to_next(p);
             while (*p == ' ') p++;
             if (strncmp(p, "DAY", 3) == 0 || strncmp(p, "day", 3) == 0)
-                { g_night_mode = 0; g_mode_day = 1; UART_PutStrNB("OK\r\n"); return; }
+                { g_night_mode = 0; g_mode_day = 1;
+                  UART_PutStrNB("*EVT:MODE DAY\r\nOK\r\n"); return; }
             if (strncmp(p, "NIGHT", 5) == 0 || strncmp(p, "night", 5) == 0)
-                { g_night_mode = 1; g_mode_day = 0; UART_PutStrNB("OK\r\n"); return; }
+                { g_night_mode = 1; g_mode_day = 0;
+                  UART_PutStrNB("*EVT:MODE NIGHT\r\nOK\r\n"); return; }
             UART_PutStrNB("ERROR PARAM\r\n"); return;
         }
 
         /* *SET:WEA <temp> <COND> */
         if (MATCH_CMD(p, "WEA", 3)) {
-            while (*p && *p != ' ') p++;
+            p = skip_to_next(p);
             while (*p == ' ') p++;
             int t = atoi(p);
             if (t < -40 || t > 50) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
             g_weather_temp = (int8_t)t;
-            while (*p && *p != ' ') p++;
+            p = skip_to_next(p);
             while (*p == ' ') p++;
             if (match_abbrev(p, "SUN"))      strcpy(g_weather_cond, "SUN");
             else if (match_abbrev(p, "CLD")) strcpy(g_weather_cond, "CLD");
@@ -1814,9 +1895,9 @@ void ProcessCommand(char *cmd)
                 uint8_t rh = (g_time.h % 10) * 10 + (g_time.h / 10);
                 uint8_t rm = (g_time.mi % 10) * 10 + (g_time.mi / 10);
                 uint8_t rs = (g_time.s % 10) * 10 + (g_time.s / 10);
-                sprintf(resp, "%02u.%02u.%02u\r\n", rs, rm, rh);
+                sprintf(resp, "OK %02u.%02u.%02u\r\n", rs, rm, rh);
             } else {
-                sprintf(resp, "%02u.%02u.%02u\r\n", g_time.h, g_time.mi, g_time.s);
+                sprintf(resp, "OK %02u.%02u.%02u\r\n", g_time.h, g_time.mi, g_time.s);
             }
             UART_PutStrNB(resp);
             return;
@@ -1828,23 +1909,24 @@ void ProcessCommand(char *cmd)
                 uint8_t rm = (g_date.m % 10) * 10 + (g_date.m / 10);
                 uint16_t ry = ((g_date.y % 10) * 1000 + ((g_date.y/10) % 10) * 100 +
                               ((g_date.y/100) % 10) * 10 + (g_date.y / 1000));
-                sprintf(resp, "%02u.%02u.%04u\r\n", rd, rm, ry);
+                sprintf(resp, "OK %02u.%02u.%04u\r\n", rd, rm, ry);
             } else {
-                sprintf(resp, "%04u.%02u.%02u\r\n", g_date.y, g_date.m, g_date.d);
+                sprintf(resp, "OK %04u.%02u.%02u\r\n", g_date.y, g_date.m, g_date.d);
             }
             UART_PutStrNB(resp);
             return;
         }
         if (match_abbrev(p, "FORMAT")) {
-            UART_PutStrNB(g_format == FMT_LEFT ? "LEFT\r\n" : "RIGHT\r\n");
+            UART_PutStrNB(g_format == FMT_LEFT ? "OK LEFT\r\n" : "OK RIGHT\r\n");
             return;
         }
         if (match_abbrev(p, "ALARM")) {
             char resp[160]; int off = 0;
             int si;
+            off = sprintf(resp, "OK");
             for (si = 0; si < ALARM_SLOTS; si++) {
-                off += sprintf(resp + off, "%s%s,%d,%d,%d,%d",
-                    si ? " " : "", DOW_NAMES[si + 1],
+                off += sprintf(resp + off, " %s,%d,%d,%d,%d",
+                    DOW_NAMES[si + 1],
                     g_alarm_slot[si].h, g_alarm_slot[si].mi, g_alarm_slot[si].s,
                     (g_alarm_slot_enabled_mask & (1 << si)) ? 1 : 0);
             }
@@ -1853,11 +1935,15 @@ void ProcessCommand(char *cmd)
             return;
         }
         if (match_abbrev(p, "DISP")) {
-            UART_PutStrNB(disp_on ? "ON\r\n" : "OFF\r\n");
+            UART_PutStrNB(disp_on ? "OK ON\r\n" : "OK OFF\r\n");
             return;
         }
         if (match_abbrev(p, "MODE")) {
-            UART_PutStrNB(g_night_mode ? "NIGHT\r\n" : "DAY\r\n");
+            UART_PutStrNB(g_night_mode ? "OK NIGHT\r\n" : "OK DAY\r\n");
+            return;
+        }
+        if (match_abbrev(p, "SPEED")) {
+            UART_PutStrNB(g_scroll_speed_level ? "OK FAST\r\n" : "OK SLOW\r\n");
             return;
         }
         UART_PutStrNB("ERROR SYNTAX\r\n");
@@ -1886,20 +1972,12 @@ static void Report_Display(void)
     char str[DISP_LEN + 1];
     uint8_t dp_hex;
     uint8_t i;
-    uint8_t j;
     char buf[40];
 
     dp_hex = 0;
     for (i = 0; i < DISP_LEN; i++) {
-        uint8_t seg = disp_buf[i] & 0x7F;
-        char ch = '_';
-        for (j = 0; j < 36; j++) {
-            if (seg7_table[j] == seg) {
-                if (j < 10) ch = '0' + (char)j;
-                else if (j < 36) ch = 'A' + (char)(j - 10);
-                break;
-            }
-        }
+        char ch = disp_char[i];
+        if (ch == ' ') ch = '_';
         str[i] = ch;
         if (disp_dp[i]) dp_hex |= (uint8_t)(1 << (7 - i));
     }
@@ -2061,24 +2139,11 @@ int main(void)
 
             Alarm_Check();
 
-            if (g_state == STATE_MSG_STATIC) {
-                if (Tick_TimedOut(g_msg_end_ms, 0)) {
-                    g_msg_active = 0;
-                    g_state = STATE_CLOCK;
-                }
-            }
-
-            if (g_state == STATE_WEATHER) {
-                if (Tick_TimedOut(g_msg_end_ms, 0)) {
-                    g_state = STATE_CLOCK;
-                }
-            }
-
             if (g_state == STATE_CLOCK) {
                 Clock_FormatDisplay();
             }
 
-            if (g_state >= STATE_EDIT_DATE && g_state <= STATE_EDIT_ALARM) {
+            if (g_state >= STATE_EDIT_DATE_LONG && g_state <= STATE_EDIT_ALARM) {
                 if (Tick_TimedOut(g_last_activity_ms, 5000)) {
                     Edit_Exit(0);
                 }
@@ -2119,18 +2184,23 @@ int main(void)
                     Alarm_Stop();
                 }
                 else if (g_state == STATE_SCROLL) {
-                    if (kc != KEY_FUNC && kc != KEY_SHIFT &&
-                        kc != KEY_ADD && kc != KEY_SAVE) {
-                        g_state = STATE_CLOCK;
-                        Clock_FormatDisplay();
+                    if (kc == KEY_SPEED && ke == KEV_DOWN) {
+                        g_scroll_speed_level = !g_scroll_speed_level;
+                        UART_PutStrNB(g_scroll_speed_level ? "*EVT:SPEED FAST\r\n" : "*EVT:SPEED SLOW\r\n");
+                    } else if (kc == KEY_FORMAT && ke == KEV_DOWN && !g_night_mode) {
+                        g_format = (g_format == FMT_LEFT) ? FMT_RIGHT : FMT_LEFT;
+                        scroll_dir = !scroll_dir;
+                    } else if (kc != KEY_FUNC && kc != KEY_SHIFT &&
+                               kc != KEY_ADD && kc != KEY_SAVE) {
+                        g_state = STATE_CLOCK; g_msg_active = 0; Clock_FormatDisplay();
                     }
                 }
-                else if (g_state >= STATE_EDIT_DATE && g_state <= STATE_EDIT_ALARM) {
+                else if (g_state >= STATE_EDIT_DATE_LONG && g_state <= STATE_EDIT_ALARM) {
                     Edit_HandleKey(kc, ke);
                 }
                 else if (g_state == STATE_CLOCK) {
                     if (kc == KEY_FUNC && ke == KEV_DOWN) {
-                        Edit_Enter(STATE_EDIT_DATE);
+                        Edit_Enter(STATE_EDIT_DATE_LONG);
                     } else if (kc == KEY_USER2 && ke == KEV_DOWN) {
                         if (g_weather_valid) {
                             char wstr[9];
@@ -2145,21 +2215,20 @@ int main(void)
                         }
                     } else if (kc == KEY_SPEED && ke == KEV_DOWN) {
                         g_scroll_speed_level = !g_scroll_speed_level;
-                    } else if (kc == KEY_DISP && ke == KEV_DOWN) {
+                    } else if (kc == KEY_DISP && ke == KEV_DOWN && !g_night_mode) {
                         g_disp_mode = (g_disp_mode + 1) % 3;
                         if (g_state == STATE_SCROLL) { g_state = STATE_CLOCK; }
                         Clock_FormatDisplay();
-                    } else if (kc == KEY_FORMAT && ke == KEV_DOWN) {
+                    } else if (kc == KEY_FORMAT && ke == KEV_DOWN && !g_night_mode) {
                         g_format = (g_format == FMT_LEFT) ? FMT_RIGHT : FMT_LEFT;
                         Clock_FormatDisplay();
                     } else if (kc == KEY_EXT && ke == KEV_DOWN) {
-                        uint8_t idx = ALARM_IDX;
-                        if (g_alarm_slot_enabled_mask & (1 << idx))
-                            g_alarm_slot_enabled_mask &= ~(1 << idx);
-                        else
-                            g_alarm_slot_enabled_mask |= (1 << idx);
-                        if (!(g_alarm_slot_enabled_mask & (1 << idx)))
-                            Alarm_Stop();
+                        uint8_t idx = ALARM_IDX; uint8_t was_on;
+                        if (g_alarm_slot_enabled_mask & (1 << idx)) {
+                            g_alarm_slot_enabled_mask &= ~(1 << idx); was_on = 1;
+                        } else { g_alarm_slot_enabled_mask |= (1 << idx); was_on = 0; }
+                        { char buf[32]; sprintf(buf, "*EVT:ALARM:SET %s %s\r\n", DOW_NAMES[idx + 1], was_on ? "OFF" : "ON"); UART_PutStrNB(buf); }
+                        if (!(g_alarm_slot_enabled_mask & (1 << idx))) Alarm_Stop();
                     } else if (kc == KEY_USER1 && ke == KEV_DOWN) {
                         /* PC will trigger NTP sync */
                     }
@@ -2169,6 +2238,7 @@ int main(void)
                     sprintf(buf, "*EVT:KEY %s\r\n", keycode_to_name(kc));
                     UART_PutStrNB(buf);
                 }
+                g_suppress_key_evt = 0;
             }
         }
     }

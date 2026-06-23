@@ -219,6 +219,35 @@ class SerialThread(QThread):
 
 
 # ============================================================
+# NetworkWorker — 异步网络请求（不阻塞 UI）
+# ============================================================
+class NtpWorker(QObject):
+    """后台线程执行 NTP 请求，结果通过信号发回主线程"""
+    finished = pyqtSignal(object)  # None=失败, (y,mo,d,h,mi,s)=成功
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            t = fetch_ntp_time()
+            self.finished.emit(t)
+        except Exception:
+            self.finished.emit(None)
+
+
+class WeatherWorker(QObject):
+    """后台线程执行天气请求，结果通过信号发回主线程"""
+    finished = pyqtSignal(object)  # None=失败, (cmd,desc)=成功
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            result = fetch_weather_command()
+            self.finished.emit(result)
+        except Exception:
+            self.finished.emit(None)
+
+
+# ============================================================
 # VirtualTwinPanel — 主窗口
 # ============================================================
 class VirtualTwinPanel(QMainWindow):
@@ -239,6 +268,7 @@ class VirtualTwinPanel(QMainWindow):
         self._weather_temp = -99  # cached weather data for PC mirror display
         self._weather_cond = "---"
         self._weather_desc = ""
+        self._show_weather_seg = False  # True=PC is showing weather, block *EVT:DISP
 
         # Alarm LED blink timer
         self._alarm_blink = QTimer()
@@ -710,11 +740,12 @@ class VirtualTwinPanel(QMainWindow):
         # 滚动速度
         spd_row = QHBoxLayout()
         spd_row.addWidget(QLabel("滚动速度:"))
-        self.radio_spd_slow = QRadioButton("慢 (500ms)"); self.radio_spd_slow.setChecked(True)
-        self.radio_spd_fast = QRadioButton("快 (200ms)")
-        # SPEED 是切换键，这里简化处理：每次点击发送一次 SPEED 键
-        self.radio_spd_slow.toggled.connect(
-            lambda v: v and self.send_cmd("*SET:KEY SPEED"))
+        self.radio_spd_slow = QRadioButton("慢 (500ms)")
+        self.radio_spd_fast = QRadioButton("快 (250ms)")
+        self._spd_updating = False
+        self.radio_spd_slow.setChecked(True)
+        self.radio_spd_slow.toggled.connect(self._on_speed_toggled)
+        self.radio_spd_fast.toggled.connect(self._on_speed_toggled)
         spd_row.addWidget(self.radio_spd_slow)
         spd_row.addWidget(self.radio_spd_fast)
         spd_row.addStretch()
@@ -1047,6 +1078,12 @@ class VirtualTwinPanel(QMainWindow):
             self.log(f"发送失败: {cmd}", "error")
             return False
 
+    def _on_speed_toggled(self, checked):
+        """滚动速度 radio 切换 → 发送 *SET:KEY SPEED 到 MCU"""
+        if self._spd_updating or not checked:
+            return
+        self.send_cmd("*SET:KEY SPEED")
+
     # ================================================================
     # 标签页事件处理
     # ================================================================
@@ -1237,10 +1274,21 @@ class VirtualTwinPanel(QMainWindow):
     # ================================================================
 
     def _on_ntp_sync(self):
-        """E1: NTP time sync"""
+        """E1: NTP time sync (QThread, non-blocking)"""
         self.lbl_ntp_status.setText("同步中...")
         self.lbl_ntp_status.setStyleSheet("color: #FFE66D;")
-        t = fetch_ntp_time()
+        self._ntp_thread = QThread(self)          # parent=self 防止 GC 过早销毁
+        self._ntp_worker = NtpWorker()
+        self._ntp_worker.moveToThread(self._ntp_thread)
+        self._ntp_worker.finished.connect(self._on_ntp_result)
+        self._ntp_worker.finished.connect(self._ntp_thread.quit)
+        self._ntp_thread.started.connect(self._ntp_worker.run)
+        self._ntp_thread.finished.connect(self._ntp_worker.deleteLater)
+        self._ntp_thread.finished.connect(self._ntp_thread.deleteLater)
+        self._ntp_thread.start()
+
+    def _on_ntp_result(self, t):
+        """MAIN thread callback after NTP fetch"""
         if t is None:
             self.lbl_ntp_status.setText("失败 (网络?)")
             self.lbl_ntp_status.setStyleSheet("color: #FF6B6B;")
@@ -1250,6 +1298,7 @@ class VirtualTwinPanel(QMainWindow):
         cmds = [
             f"*SET:DATE YEAR {y} MONTH {mo} DATE {d}",
             f"*SET:TIME HOUR {h} MIN {mi} SEC {s}",
+            "*NTP",
         ]
         for i, cmd in enumerate(cmds):
             QTimer.singleShot(i * 200, lambda c=cmd: self.send_cmd(c))
@@ -1260,28 +1309,45 @@ class VirtualTwinPanel(QMainWindow):
         self._log_csv("NTP_SYNC", ts)
 
     def _on_weather_fetch(self):
-        """E2: Fetch weather from wttr.in"""
+        """E2: Fetch weather from wttr.in (QThread, non-blocking)"""
         self.lbl_weather_status.setText("获取中...")
         self.lbl_weather_status.setStyleSheet("color: #FFE66D;")
-        result = fetch_weather_command()
+        self._wea_thread = QThread(self)          # parent=self 防止 GC 过早销毁
+        self._wea_worker = WeatherWorker()
+        self._wea_worker.moveToThread(self._wea_thread)
+        self._wea_worker.finished.connect(self._on_weather_result)
+        self._wea_worker.finished.connect(self._wea_thread.quit)
+        self._wea_thread.started.connect(self._wea_worker.run)
+        self._wea_thread.finished.connect(self._wea_worker.deleteLater)
+        self._wea_thread.finished.connect(self._wea_thread.deleteLater)
+        self._wea_thread.start()
+
+    def _on_weather_result(self, result):
+        """MAIN thread callback after weather fetch"""
         if result is None:
             self.lbl_weather_status.setText("失败 (网络?)")
             self.lbl_weather_status.setStyleSheet("color: #FF6B6B;")
             self.log("天气获取失败", "error")
             return
         cmd, desc = result
-        self.send_cmd(cmd)
-        # Cache weather for PC mirror
-        w = fetch_weather()
-        if w:
-            self._weather_temp, self._weather_cond, self._weather_desc = w
+        self.send_cmd(cmd)          # *SET:WEA <T> <COND> → MCU
+        # 解析 "*SET:WEA 23 RAI" (3 部分: 前缀/温度/天气码)
+        parts = cmd.split()
+        if len(parts) >= 3:
+            try:
+                self._weather_temp = int(parts[1])
+            except ValueError:
+                self._weather_temp = -99
+            self._weather_cond = parts[2][:3]
         else:
-            self._weather_desc = desc
+            self._weather_temp = -99
+            self._weather_cond = "---"
+        self._weather_desc = desc
         self.lbl_weather_status.setText(desc)
         self.lbl_weather_status.setStyleSheet("color: #95E77E;")
         self.log(f"天气: {desc}", "success")
         self._log_csv("WEATHER", desc)
-        # Show weather on PC SEG for 3 seconds
+        # PC SEG 直接显示天气 3s
         self._show_weather_on_seg()
 
     def _on_weather_auto_toggle(self, checked):
@@ -1426,8 +1492,8 @@ class VirtualTwinPanel(QMainWindow):
         self.leds2[0].set_state(True)
         QTimer.singleShot(100, lambda: self.leds2[0].set_state(False))
 
-        # ── *EVT:DISP <8chars> <dpHex> ──
-        if data_upper.startswith("*EVT:DISP"):
+        # ── *EVT:DISP <8chars> <dpHex> (skip while PC shows weather) ──
+        if data_upper.startswith("*EVT:DISP") and not self._show_weather_seg:
             parts = data.split()
             if len(parts) >= 3:
                 disp = parts[1][:8].ljust(8, ' ')
@@ -1553,6 +1619,17 @@ class VirtualTwinPanel(QMainWindow):
             if len(parts) >= 2:
                 self._set_mode_indicator(parts[1].upper())
 
+        # ── *EVT:SPEED SLOW|FAST ──
+        elif data_upper.startswith("*EVT:SPEED"):
+            parts = data.split()
+            if len(parts) >= 2:
+                self._spd_updating = True
+                if parts[1].upper() == "FAST":
+                    self.radio_spd_fast.setChecked(True)
+                else:
+                    self.radio_spd_slow.setChecked(True)
+                self._spd_updating = False
+
         # ── *EVT:ALARM:SET <ON|OFF> (EXT key toggle) ──
         elif data_upper.startswith("*EVT:ALARM:SET"):
             parts = data.split()
@@ -1665,7 +1742,7 @@ class VirtualTwinPanel(QMainWindow):
         QTimer.singleShot(300, lambda: self._flash_alarm(count - 1))
 
     def _show_weather_on_seg(self):
-        """Show weather data on PC SEG display for 3 seconds"""
+        """Show weather on PC SEG for 3s, temporarily pause *EVT:DISP mirror"""
         if self._weather_temp == -99:
             return
         t_str = f"{self._weather_temp}C"
@@ -1673,6 +1750,13 @@ class VirtualTwinPanel(QMainWindow):
         full = (t_str + " " + cond_str).ljust(8, ' ')[:8]
         for i, ch in enumerate(full):
             self.segments[i].set_digit(ch, False)
+        # 暂停 *EVT:DISP 更新 3s，避免覆盖天气显示
+        self._show_weather_seg = True
+        QTimer.singleShot(3000, self._end_weather_seg)
+
+    def _end_weather_seg(self):
+        """Restore *EVT:DISP mirroring"""
+        self._show_weather_seg = False
 
     def _blink_alarm_led(self):
         """Blink alarm LED during ringing"""

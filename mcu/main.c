@@ -894,6 +894,13 @@ void Scroll_Tick(void)
 
     if (scroll_len == 0) return;
 
+    if (scroll_len <= DISP_LEN) {
+        /* ≤8 chars: static display from scroll_buf — 长短信共用缓冲区 */
+        Display_SetStr(scroll_buf, scroll_dp_bitmap);
+        return;
+    }
+
+    /* >8 chars: full one-pass scroll */
     total_steps = (int16_t)scroll_len + 1;
 
     for (i = 0; i < DISP_LEN; i++) {
@@ -913,6 +920,8 @@ void Scroll_Tick(void)
     scroll_off++;
     if (scroll_off >= total_steps) {
         scroll_off = 0;
+        memset(scroll_buf, 0, sizeof(scroll_buf));
+        scroll_len = 0;
         g_msg_active = 0;
         g_state = STATE_CLOCK;
         Clock_FormatDisplay();
@@ -1437,8 +1446,8 @@ void ProcessCommand(char *cmd)
             disp_blink_mask = 0;
             g_led_override = 0;
             g_msg_active   = 0;
+            memset(scroll_buf, 0, sizeof(scroll_buf));
             scroll_len    = 0;
-            scroll_buf[0] = '\0';
             g_scroll_speed_level = 0;
             g_alarm_beep_active = 0;
             remote_beep_active  = 0;
@@ -1772,17 +1781,21 @@ void ProcessCommand(char *cmd)
             if (*msg_text == '\0') { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             len = (uint8_t)strlen(msg_text);
             if (len > 32) len = 32;
-            memcpy(g_msg_text, msg_text, len);
-            g_msg_text[len] = '\0';
-            g_msg_len = len;
+            /* 长短信统一使用 scroll_buf — 消除 g_msg_text 尾残留 */
+            memset(scroll_buf, 0, sizeof(scroll_buf));
+            memcpy(scroll_buf, msg_text, len);
+            scroll_len = len;
+            scroll_off = 0;
+            scroll_speed = 0;
+            scroll_dir = 0;
+            scroll_dp_bitmap = 0;
             g_msg_active = 1;
             g_msg_end_ms = g_tick_ms + 3000;
             if (len <= 8) {
-                scroll_len = 0; scroll_buf[0] = '\0';
-                Display_SetStr(g_msg_text, 0x00);
+                Display_SetStr(scroll_buf, 0x00);
                 g_state = STATE_MSG_STATIC;
             } else {
-                Scroll_Set(g_msg_text, 0x00);
+                Display_SetStr(scroll_buf, 0x00);
                 g_state = STATE_SCROLL;
             }
             UART_PutStrNB("OK\r\n");
@@ -2015,7 +2028,7 @@ int main(void)
 
     /* 系统时钟 */
     ui32SysClock = SysCtlClockFreqSet(
-        (SYSCTL_OSC_INT | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480), 20000000);
+        (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480), 20000000);
 
     /* SysTick 1ms */
     SysTickPeriodSet(ui32SysClock / SYSTICK_FREQUENCY);
@@ -2104,12 +2117,20 @@ int main(void)
         if (flag_100ms) {
             flag_100ms = 0;
 
-            /* 流水显示 */
-            if (g_state == STATE_SCROLL) {
+            /* 流水/静态显示 — 长短信共用 scroll_buf */
+            if (g_state == STATE_SCROLL || g_state == STATE_MSG_STATIC) {
                 uint16_t speed_ms = (g_scroll_speed_level == 0) ? 500 : 250;
                 if (Tick_TimedOut(last_scroll, speed_ms)) {
                     last_scroll = g_tick_ms;
                     Scroll_Tick();
+                }
+                /* MSG ≤8字超时退出 */
+                if (g_state == STATE_MSG_STATIC && g_tick_ms >= g_msg_end_ms) {
+                    memset(scroll_buf, 0, sizeof(scroll_buf));
+                    scroll_len = 0;
+                    g_msg_active = 0;
+                    g_state = STATE_CLOCK;
+                    Clock_FormatDisplay();
                 }
             }
 
@@ -2120,9 +2141,17 @@ int main(void)
                 }
             }
 
-            /* 远程蜂鸣（非阻塞，100ms检查一次） */
+            /* 天气短显超时 5s */
+            if (g_state == STATE_WEATHER) {
+                if (g_tick_ms >= g_msg_end_ms) {
+                    g_state = STATE_CLOCK;
+                    Clock_FormatDisplay();
+                }
+            }
+
+            /* 远程蜂鸣 */
             if (remote_beep_active) {
-                if (Tick_TimedOut(remote_beep_end_ms, 0)) {
+                if (g_tick_ms >= remote_beep_end_ms) {
                     remote_beep_active = 0;
                 }
             }
@@ -2183,7 +2212,7 @@ int main(void)
                 if (kc == KEY_FUNC && g_alarm_beep_active) {
                     Alarm_Stop();
                 }
-                else if (g_state == STATE_SCROLL) {
+                else if (g_state == STATE_SCROLL || g_state == STATE_MSG_STATIC) {
                     if (kc == KEY_SPEED && ke == KEV_DOWN) {
                         g_scroll_speed_level = !g_scroll_speed_level;
                         UART_PutStrNB(g_scroll_speed_level ? "*EVT:SPEED FAST\r\n" : "*EVT:SPEED SLOW\r\n");
@@ -2192,6 +2221,8 @@ int main(void)
                         scroll_dir = !scroll_dir;
                     } else if (kc != KEY_FUNC && kc != KEY_SHIFT &&
                                kc != KEY_ADD && kc != KEY_SAVE) {
+                        memset(scroll_buf, 0, sizeof(scroll_buf));
+                        scroll_len = 0;
                         g_state = STATE_CLOCK; g_msg_active = 0; Clock_FormatDisplay();
                     }
                 }

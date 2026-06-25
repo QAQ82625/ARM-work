@@ -298,16 +298,6 @@ uint8_t Tick_TimedOut(uint32_t start, uint32_t span_ms)
     return (g_tick_ms - start) >= span_ms;
 }
 
-static uint8_t cmd_match(const char *input, const char *prefix)
-{
-    while (*prefix) {
-        if (*input != *prefix) return 0;
-        input++;
-        prefix++;
-    }
-    return 1;
-}
-
 static const char *keycode_to_name(key_code_t code)
 {
     switch (code) {
@@ -1130,8 +1120,8 @@ void Boot_Sequence(void)
         }
     }
 
-    /* 学号: 20260001 */
-    Display_SetStr("20260001", 0x00);
+    /* 学号: 31910672 */
+    Display_SetStr("31910672", 0x00);
     start = g_tick_ms;
     last_disp = 0;
     while (g_tick_ms - start < 900) {
@@ -1409,8 +1399,8 @@ void Edit_HandleKey(key_code_t code, key_event_t evt)
 
 static char *skip_to_next(char *s)
 {
-    while (*s != '\0' && *s != ' ') s++;
-    while (*s == ' ') s++;
+    s += strcspn(s, " ");
+    s += strspn(s, " ");
     return s;
 }
 
@@ -1461,13 +1451,18 @@ void ProcessCommand(char *cmd)
             }
             g_alarm_slot_enabled_mask = 0x1F;
         } else {
-            char tok2[16]; int ti = 0;
+            char  tok2[16];
+            int   ti;
+            int   word_len;
+
             while (*p) {
-                while (*p == ' ') p++;
-                if (*p == '\0') break;
-                ti = 0;
-                while (*p && *p != ' ' && ti < 15) tok2[ti++] = *(p++);
-                tok2[ti] = '\0';
+                p += strspn(p, " ");
+                if (!*p) break;
+                word_len = (int)strcspn(p, " ");
+                if (word_len >= 15) word_len = 15;
+                memcpy(tok2, p, (size_t)word_len);
+                tok2[word_len] = '\0';
+                p += word_len;
                 if (match_abbrev(tok2, "DATE") || match_abbrev(tok2, "YEAR") || match_abbrev(tok2, "MONTH"))
                     { g_date.y = 2026; g_date.m = 6; g_date.d = 8; }
                 else if (match_abbrev(tok2, "TIME"))
@@ -1493,11 +1488,11 @@ void ProcessCommand(char *cmd)
         p = cmd + 5;
         while (*p == ' ') p++;  /* skip space between *SET: and sub-command */
 
-        /* *SET:DATE — keyword-aware + stable parser */
+        /* *SET:DATE — library-based parser (strspn/strcspn/strtol only) */
         if (MATCH_CMD(p, "DATE", 4)) {
             char  *t;
             char   wbuf[8];
-            int    wi;
+            int    word_len;
             int    vals[3];
             int    nv;
             int    kmap;
@@ -1514,28 +1509,32 @@ void ProcessCommand(char *cmd)
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
 
             while (*t) {
-                while (*t == ' ') t++;
+                t += strspn(t, " ");
                 if (!*t) break;
                 if (*t >= '0' && *t <= '9') {
                     if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
-                    else { while (*t != '\0' && *t != ' ') t++; }
+                    else break;
                     continue;
                 }
-                wi = 0;
-                while (*t != '\0' && *t != ' ' && wi < 7) { wbuf[wi++] = *t; t++; }
-                wbuf[wi] = '\0';
+                word_len = (int)strcspn(t, " ");
+                if (word_len >= 7) word_len = 7;
+                memcpy(wbuf, t, (size_t)word_len);
+                wbuf[word_len] = '\0';
+                t += word_len;
                 if (match_abbrev(wbuf, "YEAR"))       kmap |= 1;
                 else if (match_abbrev(wbuf, "MONTH"))  kmap |= 2;
                 else if (match_abbrev(wbuf, "DATE"))   kmap |= 4;
                 else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             }
+
             if (nv == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
 
             yr_val = -1; mo_val = -1; dy_val = -1;
             vi = 0;
-            if (kmap & 1 && vi < nv) yr_val = vals[vi++];
-            if (kmap & 2 && vi < nv) mo_val = vals[vi++];
-            if (kmap & 4 && vi < nv) dy_val = vals[vi++];
+            { volatile int _k = kmap;
+            if (_k & 1 && vi < nv) yr_val = vals[vi++];
+            if (_k & 2 && vi < nv) mo_val = vals[vi++];
+            if (_k & 4 && vi < nv) dy_val = vals[vi++]; }
             while (vi < nv) {
                 if (yr_val < 0) yr_val = vals[vi];
                 else if (mo_val < 0) mo_val = vals[vi];
@@ -1571,17 +1570,17 @@ void ProcessCommand(char *cmd)
         if (MATCH_CMD(p, "TIME", 4)) {
             char  *t;
             char   wbuf[8];
-            int    wi;
             int    vals[3];
             int    nv;
             int    kmap;
+            int    word_len;
             int    h_val;
             int    m_val;
             int    s_val;
             int    vi;
 
             t = (char *)(p + 4);
-            while (*t == ' ') t++;
+            t += strspn(t, " ");
             if ((t[0] == 'O' || t[0] == 'o') &&
                 (t[1] == 'F' || t[1] == 'f') &&
                 (t[2] == 'F' || t[2] == 'f')) {
@@ -1593,16 +1592,18 @@ void ProcessCommand(char *cmd)
             nv   = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (*t) {
-                while (*t == ' ') t++;
+                t += strspn(t, " ");
                 if (!*t) break;
                 if (*t >= '0' && *t <= '9') {
                     if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
-                    else { while (*t != '\0' && *t != ' ') t++; }
+                    else break;
                     continue;
                 }
-                wi = 0;
-                while (*t != '\0' && *t != ' ' && wi < 7) { wbuf[wi++] = *t; t++; }
-                wbuf[wi] = '\0';
+                word_len = (int)strcspn(t, " ");
+                if (word_len >= 7) word_len = 7;
+                memcpy(wbuf, t, (size_t)word_len);
+                wbuf[word_len] = '\0';
+                t += word_len;
                 if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
                 else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
                 else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
@@ -1611,9 +1612,10 @@ void ProcessCommand(char *cmd)
 
             h_val = -1; m_val = -1; s_val = -1;
             vi = 0;
-            if (kmap & 1 && vi < nv) h_val = vals[vi++];
-            if (kmap & 2 && vi < nv) m_val = vals[vi++];
-            if (kmap & 4 && vi < nv) s_val = vals[vi++];
+            { volatile int _k = kmap;
+            if (_k & 1 && vi < nv) h_val = vals[vi++];
+            if (_k & 2 && vi < nv) m_val = vals[vi++];
+            if (_k & 4 && vi < nv) s_val = vals[vi++]; }
             while (vi < nv) {
                 if (h_val < 0) h_val = vals[vi];
                 else if (m_val < 0) m_val = vals[vi];
@@ -1642,10 +1644,10 @@ void ProcessCommand(char *cmd)
         if (MATCH_CMD(p, "ALARM", 5)) {
             char  *t;
             char   wbuf[8];
-            int    wi;
             int    vals[3];
             int    nv;
             int    kmap;
+            int    word_len;
             int    h_val;
             int    m_val;
             int    s_val;
@@ -1655,17 +1657,18 @@ void ProcessCommand(char *cmd)
             int    se;
 
             t = (char *)(p + 5);
-            while (*t == ' ') t++;
+            t += strspn(t, " ");
 
             ss = (int)ALARM_IDX;
             se = ss + 1;
 
             {
-                char *ck = t;
-                while (*ck == ' ') ck++;
-                wi = 0;
-                while (*ck != '\0' && *ck != ' ' && wi < 7) { wbuf[wi++] = *ck; ck++; }
-                wbuf[wi] = '\0';
+                char *ck = t + strspn(t, " ");
+                word_len = (int)strcspn(ck, " ");
+                if (word_len >= 7) word_len = 7;
+                memcpy(wbuf, ck, (size_t)word_len);
+                wbuf[word_len] = '\0';
+                ck += word_len;
                 if      (match_abbrev(wbuf, "MONday"))    { ss = 0; se = 1; t = ck; }
                 else if (match_abbrev(wbuf, "TUEsday"))   { ss = 1; se = 1; t = ck; }
                 else if (match_abbrev(wbuf, "WEDnesday")) { ss = 2; se = 1; t = ck; }
@@ -1677,8 +1680,7 @@ void ProcessCommand(char *cmd)
             }
 
             {
-                char *ck = t;
-                while (*ck == ' ') ck++;
+                char *ck = t + strspn(t, " ");
                 if ((ck[0] == 'O' || ck[0] == 'o')) {
                     if ((ck[1] == 'N' || ck[1] == 'n')) {
                         for (si = ss; si < se; si++)
@@ -1699,16 +1701,18 @@ void ProcessCommand(char *cmd)
             nv   = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (*t) {
-                while (*t == ' ') t++;
+                t += strspn(t, " ");
                 if (!*t) break;
                 if (*t >= '0' && *t <= '9') {
                     if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
-                    else { while (*t != '\0' && *t != ' ') t++; }
+                    else break;
                     continue;
                 }
-                wi = 0;
-                while (*t != '\0' && *t != ' ' && wi < 7) { wbuf[wi++] = *t; t++; }
-                wbuf[wi] = '\0';
+                word_len = (int)strcspn(t, " ");
+                if (word_len >= 7) word_len = 7;
+                memcpy(wbuf, t, (size_t)word_len);
+                wbuf[word_len] = '\0';
+                t += word_len;
                 if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
                 else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
                 else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
@@ -1717,9 +1721,10 @@ void ProcessCommand(char *cmd)
 
             h_val = -1; m_val = -1; s_val = -1;
             vi = 0;
-            if (kmap & 1 && vi < nv) h_val = vals[vi++];
-            if (kmap & 2 && vi < nv) m_val = vals[vi++];
-            if (kmap & 4 && vi < nv) s_val = vals[vi++];
+            { volatile int _k = kmap;
+            if (_k & 1 && vi < nv) h_val = vals[vi++];
+            if (_k & 2 && vi < nv) m_val = vals[vi++];
+            if (_k & 4 && vi < nv) s_val = vals[vi++]; }
             while (vi < nv) {
                 if (h_val < 0) h_val = vals[vi];
                 else if (m_val < 0) m_val = vals[vi];
@@ -1804,9 +1809,10 @@ void ProcessCommand(char *cmd)
 
         /* *SET:BEEP 10-5000 */
         if (MATCH_CMD(p, "BEEP", 4)) {
+            uint16_t ms;
             p = skip_to_next(p);
             while (*p == ' ') p++;
-            uint16_t ms = (uint16_t)atoi(p);
+            ms = (uint16_t)atoi(p);
             if (ms < 10 || ms > 5000) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
             remote_beep_active = 1;
             remote_beep_end_ms = g_tick_ms + ms;
@@ -2017,8 +2023,6 @@ int main(void)
     uint32_t last_led_update;
     uint32_t last_report;
     uint32_t last_scroll;
-    uint32_t elapsed;
-    uint8_t  phase_in_cycle;
 
     last_key_scan     = 0;
     last_disp_scan    = 0;

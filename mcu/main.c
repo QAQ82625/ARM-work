@@ -646,6 +646,13 @@ void ExtractLine(void)
     char upper[16];
     uint8_t j;
 
+    /* skip leading \r\n leftover from previous line */
+    while (uart_rx_tail != uart_rx_head) {
+        char lc = uart_rx_buf[uart_rx_tail];
+        if (lc != '\r' && lc != '\n') break;
+        uart_rx_tail = (uart_rx_tail + 1) % UART_RX_BUF_SIZE;
+    }
+
     idx = 0;
     is_msg = 0;
 
@@ -1452,12 +1459,12 @@ void ProcessCommand(char *cmd)
             g_alarm_slot_enabled_mask = 0x1F;
         } else {
             char  tok2[16];
-            int   ti;
+            int   pass;
             int   word_len;
 
-            while (*p) {
+            for (pass = 0; pass < 3; pass++) {
                 p += strspn(p, " ");
-                if (!*p) break;
+                if (*p == '\0') break;
                 word_len = (int)strcspn(p, " ");
                 if (word_len >= 15) word_len = 15;
                 memcpy(tok2, p, (size_t)word_len);
@@ -1488,77 +1495,80 @@ void ProcessCommand(char *cmd)
         p = cmd + 5;
         p += strspn(p, " ");  /* skip space between *SET: and sub-command */
 
-        /* *SET:DATE — library-based parser (strspn/strcspn/strtol only) */
+/* *SET:DATE - 2-pass keyword-aware parser */
         if (MATCH_CMD(p, "DATE", 4)) {
             char  *t;
             char   wbuf[8];
-            int    word_len;
             int    vals[3];
-            int    nv;
+            int    wlen;
+            int    wi;
             int    kmap;
             int    yr_val;
             int    mo_val;
             int    dy_val;
             int    vi;
-            int    any;
             uint8_t max_d;
 
             t = (char *)(p + 4);
-            kmap = 0;
-            nv   = 0;
-            vals[0] = -1; vals[1] = -1; vals[2] = -1;
 
-            while (*t) {
+            /* Pass 1: scan keywords only - build kmap */
+            kmap = 0;
+            { int _p = 0; while (_p < 10) { _p++;
                 t += strspn(t, " ");
                 if (!*t) break;
-                if (*t >= '0' && *t <= '9') {
-                    if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
-                    else break;
-                    continue;
+                wlen = (int)strcspn(t, " ");
+                if (wlen >= 7) wlen = 7;
+                if (strspn(t, "0123456789") > 0) {
+                    t += wlen;
+                } else {
+                    memcpy(wbuf, t, (size_t)wlen);
+                    wbuf[wlen] = '\0';
+                    t += wlen;
+                    if (match_abbrev(wbuf, "YEAR"))       kmap |= 1;
+                    else if (match_abbrev(wbuf, "MONTH"))  kmap |= 2;
+                    else if (match_abbrev(wbuf, "DATE"))   kmap |= 4;
+                    else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
                 }
-                word_len = (int)strcspn(t, " ");
-                if (word_len >= 7) word_len = 7;
-                memcpy(wbuf, t, (size_t)word_len);
-                wbuf[word_len] = '\0';
-                t += word_len;
-                if (match_abbrev(wbuf, "YEAR"))       kmap |= 1;
-                else if (match_abbrev(wbuf, "MONTH"))  kmap |= 2;
-                else if (match_abbrev(wbuf, "DATE"))   kmap |= 4;
-                else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            }
             }
 
-            if (nv == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            /* Pass 2: extract all integers at once */
+            t = (char *)(p + 4);
+            wi = 0;
+            vals[0] = -1; vals[1] = -1; vals[2] = -1;
+            while (wi < 3) {
+                t += strcspn(t, "0123456789");
+                if (!*t) break;
+                vals[wi] = (int)strtol(t, &t, 10);
+                wi++;
+            }
 
+            if (wi == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+
+            /* Map vals by kmap order, then fill remaining */
             yr_val = -1; mo_val = -1; dy_val = -1;
             vi = 0;
-            { volatile int _k = kmap;
-            if (_k & 1 && vi < nv) yr_val = vals[vi++];
-            if (_k & 2 && vi < nv) mo_val = vals[vi++];
-            if (_k & 4 && vi < nv) dy_val = vals[vi++]; }
-            while (vi < nv) {
+            if (kmap & 1) yr_val = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 2) mo_val = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 4) dy_val = (vi < wi) ? vals[vi++] : -1;
+            while (vi < wi) {
                 if (yr_val < 0) yr_val = vals[vi];
                 else if (mo_val < 0) mo_val = vals[vi];
                 else if (dy_val < 0) dy_val = vals[vi];
                 vi++;
             }
 
-            any = 0;
-            if (yr_val >= 0) {
-                if (yr_val < 2025 || yr_val > 2099)
-                    { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                g_date.y = (uint16_t)yr_val; any = 1;
-            }
+            if (yr_val < 0) yr_val = (int)g_date.y;
+            if (yr_val < 2025 || yr_val > 2099) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+            g_date.y = (uint16_t)yr_val;
             if (mo_val >= 0) {
-                if (mo_val < 1 || mo_val > 12)
-                    { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                g_date.m = (uint8_t)mo_val; any = 1;
+                if (mo_val < 1 || mo_val > 12) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                g_date.m = (uint8_t)mo_val;
             }
             if (dy_val >= 0) {
-                if (dy_val < 1 || dy_val > 31)
-                    { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                g_date.d = (uint8_t)dy_val; any = 1;
+                if (dy_val < 1 || dy_val > 31) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                g_date.d = (uint8_t)dy_val;
             }
-            if (!any) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             max_d = days_in_month[g_date.m - 1];
             if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
             if (g_date.d > max_d) g_date.d = max_d;
@@ -1566,14 +1576,14 @@ void ProcessCommand(char *cmd)
             return;
         }
 
-        /* *SET:TIME — keyword-aware + stable parser */
+        /* *SET:TIME - 2-pass keyword-aware parser */
         if (MATCH_CMD(p, "TIME", 4)) {
             char  *t;
             char   wbuf[8];
             int    vals[3];
-            int    nv;
+            int    wlen;
+            int    wi;
             int    kmap;
-            int    word_len;
             int    h_val;
             int    m_val;
             int    s_val;
@@ -1581,6 +1591,7 @@ void ProcessCommand(char *cmd)
 
             t = (char *)(p + 4);
             t += strspn(t, " ");
+
             if ((t[0] == 'O' || t[0] == 'o') &&
                 (t[1] == 'F' || t[1] == 'f') &&
                 (t[2] == 'F' || t[2] == 'f')) {
@@ -1588,35 +1599,46 @@ void ProcessCommand(char *cmd)
                 UART_PutStrNB("OK\r\n"); return;
             }
 
+            /* Pass 1: scan keywords */
             kmap = 0;
-            nv   = 0;
-            vals[0] = -1; vals[1] = -1; vals[2] = -1;
-            while (*t) {
+            { int _p = 0; while (_p < 10) { _p++;
                 t += strspn(t, " ");
                 if (!*t) break;
-                if (*t >= '0' && *t <= '9') {
-                    if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
-                    else break;
-                    continue;
+                wlen = (int)strcspn(t, " ");
+                if (wlen >= 7) wlen = 7;
+                if (strspn(t, "0123456789") > 0) {
+                    t += wlen;
+                } else {
+                    memcpy(wbuf, t, (size_t)wlen);
+                    wbuf[wlen] = '\0';
+                    t += wlen;
+                    if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
+                    else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
+                    else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
+                    else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
                 }
-                word_len = (int)strcspn(t, " ");
-                if (word_len >= 7) word_len = 7;
-                memcpy(wbuf, t, (size_t)word_len);
-                wbuf[word_len] = '\0';
-                t += word_len;
-                if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
-                else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
-                else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
-                else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            }
             }
 
+            /* Pass 2: extract integers */
+            t = (char *)(p + 4);
+            t += strspn(t, " ");
+            wi = 0;
+            vals[0] = -1; vals[1] = -1; vals[2] = -1;
+            while (wi < 3) {
+                t += strcspn(t, "0123456789");
+                if (!*t) break;
+                vals[wi] = (int)strtol(t, &t, 10);
+                wi++;
+            }
+
+            /* Map by kmap */
             h_val = -1; m_val = -1; s_val = -1;
             vi = 0;
-            { volatile int _k = kmap;
-            if (_k & 1 && vi < nv) h_val = vals[vi++];
-            if (_k & 2 && vi < nv) m_val = vals[vi++];
-            if (_k & 4 && vi < nv) s_val = vals[vi++]; }
-            while (vi < nv) {
+            if (kmap & 1) h_val = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 2) m_val = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 4) s_val = (vi < wi) ? vals[vi++] : -1;
+            while (vi < wi) {
                 if (h_val < 0) h_val = vals[vi];
                 else if (m_val < 0) m_val = vals[vi];
                 else if (s_val < 0) s_val = vals[vi];
@@ -1640,14 +1662,14 @@ void ProcessCommand(char *cmd)
             return;
         }
 
-        /* *SET:ALARM — keyword-aware + stable parser */
+        /* *SET:ALARM - 2-pass keyword-aware parser */
         if (MATCH_CMD(p, "ALARM", 5)) {
             char  *t;
             char   wbuf[8];
             int    vals[3];
-            int    nv;
+            int    wlen;
+            int    wi;
             int    kmap;
-            int    word_len;
             int    h_val;
             int    m_val;
             int    s_val;
@@ -1662,70 +1684,62 @@ void ProcessCommand(char *cmd)
             ss = (int)ALARM_IDX;
             se = ss + 1;
 
-            {
-                char *ck = t + strspn(t, " ");
-                word_len = (int)strcspn(ck, " ");
-                if (word_len >= 7) word_len = 7;
-                memcpy(wbuf, ck, (size_t)word_len);
-                wbuf[word_len] = '\0';
-                ck += word_len;
-                if      (match_abbrev(wbuf, "MONday"))    { ss = 0; se = 1; t = ck; }
-                else if (match_abbrev(wbuf, "TUEsday"))   { ss = 1; se = 1; t = ck; }
-                else if (match_abbrev(wbuf, "WEDnesday")) { ss = 2; se = 1; t = ck; }
-                else if (match_abbrev(wbuf, "THUrsday"))  { ss = 3; se = 1; t = ck; }
-                else if (match_abbrev(wbuf, "FRIday"))    { ss = 4; se = 1; t = ck; }
-                else if (match_abbrev(wbuf, "SATurday"))  { ss = 5; se = 1; t = ck; }
-                else if (match_abbrev(wbuf, "SUNday"))    { ss = 6; se = 1; t = ck; }
-                else if (match_abbrev(wbuf, "ALL"))       { ss = 0; se = ALARM_SLOTS; t = ck; }
-            }
-
-            {
-                char *ck = t + strspn(t, " ");
-                if ((ck[0] == 'O' || ck[0] == 'o')) {
-                    if ((ck[1] == 'N' || ck[1] == 'n')) {
-                        for (si = ss; si < se; si++)
-                            g_alarm_slot_enabled_mask |= (1U << si);
-                        UART_PutStrNB("OK\r\n"); return;
-                    }
-                    if ((ck[1] == 'F' || ck[1] == 'f') &&
-                        (ck[2] == 'F' || ck[2] == 'f')) {
-                        for (si = ss; si < se; si++)
-                            g_alarm_slot_enabled_mask &= ~(1U << si);
-                        g_alarm_beep_active = 0;
-                        UART_PutStrNB("OK\r\n"); return;
-                    }
+            /* Check ON/OFF */
+            if ((t[0] == 'O' || t[0] == 'o')) {
+                if ((t[1] == 'N' || t[1] == 'n')) {
+                    for (si = ss; si < se; si++)
+                        g_alarm_slot_enabled_mask |= (1U << si);
+                    UART_PutStrNB("OK\r\n"); return;
+                }
+                if ((t[1] == 'F' || t[1] == 'f') &&
+                    (t[2] == 'F' || t[2] == 'f')) {
+                    for (si = ss; si < se; si++)
+                        g_alarm_slot_enabled_mask &= ~(1U << si);
+                    g_alarm_beep_active = 0;
+                    UART_PutStrNB("OK\r\n"); return;
                 }
             }
 
+            /* Pass 1: scan keywords */
             kmap = 0;
-            nv   = 0;
-            vals[0] = -1; vals[1] = -1; vals[2] = -1;
-            while (*t) {
+            { int _p = 0; while (_p < 10) { _p++;
                 t += strspn(t, " ");
                 if (!*t) break;
-                if (*t >= '0' && *t <= '9') {
-                    if (nv < 3) { vals[nv] = (int)strtol(t, &t, 10); nv++; }
-                    else break;
-                    continue;
+                wlen = (int)strcspn(t, " ");
+                if (wlen >= 7) wlen = 7;
+                if (strspn(t, "0123456789") > 0) {
+                    t += wlen;
+                } else {
+                    memcpy(wbuf, t, (size_t)wlen);
+                    wbuf[wlen] = '\0';
+                    t += wlen;
+                    if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
+                    else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
+                    else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
+                    else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
                 }
-                word_len = (int)strcspn(t, " ");
-                if (word_len >= 7) word_len = 7;
-                memcpy(wbuf, t, (size_t)word_len);
-                wbuf[word_len] = '\0';
-                t += word_len;
-                if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
-                else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
-                else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
-                else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            }
             }
 
+            /* Pass 2: extract integers */
+            t = (char *)(p + 5);
+            t += strspn(t, " ");
+            wi = 0;
+            vals[0] = -1; vals[1] = -1; vals[2] = -1;
+            while (wi < 3) {
+                t += strcspn(t, "0123456789");
+                if (!*t) break;
+                vals[wi] = (int)strtol(t, &t, 10);
+                wi++;
+            }
+
+            /* Map by kmap */
             h_val = -1; m_val = -1; s_val = -1;
             vi = 0;
-            { volatile int _k = kmap;
-            if (_k & 1 && vi < nv) h_val = vals[vi++];
-            if (_k & 2 && vi < nv) m_val = vals[vi++];
-            if (_k & 4 && vi < nv) s_val = vals[vi++]; }
-            while (vi < nv) {
+            if (kmap & 1) h_val = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 2) m_val = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 4) s_val = (vi < wi) ? vals[vi++] : -1;
+            while (vi < wi) {
                 if (h_val < 0) h_val = vals[vi];
                 else if (m_val < 0) m_val = vals[vi];
                 else if (s_val < 0) s_val = vals[vi];
@@ -1756,7 +1770,6 @@ void ProcessCommand(char *cmd)
             UART_PutStrNB("OK\r\n");
             return;
         }
-
         /* *SET:DISPlay ON/OFF */
         if (MATCH_CMD(p, "DISPLAY", 4) || MATCH_CMD(p, "DISP", 4)) {
             p = skip_to_next(p);
@@ -1781,14 +1794,15 @@ void ProcessCommand(char *cmd)
             char   *msg_text;
             uint8_t len;
 
+            /* cmd_line for MSG preserves original case (is_msg=1 in ExtractLine) */
             msg_text = p + 3;
             msg_text += strspn(msg_text, " ");
             if (*msg_text == '\0') { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             len = (uint8_t)strlen(msg_text);
             if (len > 32) len = 32;
-            /* 长短信统一使用 scroll_buf — 消除 g_msg_text 尾残留 */
             memset(scroll_buf, 0, sizeof(scroll_buf));
             memcpy(scroll_buf, msg_text, len);
+
             scroll_len = len;
             scroll_off = 0;
             scroll_speed = 0;

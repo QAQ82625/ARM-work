@@ -18,6 +18,7 @@ hw26-0672/
 │   └── RTE/                     ← 启动文件
 └── pc_host/
     ├── virual_twin_panel.py     ← PC上位机（PyQt5 数字孪生面板）
+    ├── snake_game.py            ← 贪吃蛇游戏 (MCU按键操控+PC渲染)
     ├── ntp_helper.py            ← NTP 对时模块
     ├── weather_helper.py        ← 天气获取模块
     ├── requirements.txt         ← Python 依赖
@@ -49,20 +50,23 @@ python virual_twin_panel.py
 
 ### §3.1 开机画面 ✅
 
-8位SEG+8位LED全亮→全灭 ≥1次 → 学号 `20260001` 闪烁1次 → 姓名 `HUZHENYE` 闪烁1次 → 版本号 `V1.0` 持续1s → 进入时钟
+8位SEG+8位LED全亮→全灭 ≥1次 → 学号 `20260001` 闪烁1次 (LED跟随闪烁) → 姓名 `HUZHENYE` 闪烁1次 (LED跟随闪烁) → 版本号 `V1.0` 持续1.5s → 进入时钟
 
 ### §3.2 时钟日期显示 ✅
 
+- 时钟源: 外部 25MHz 晶振 (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN)，UART 115200 波特率精准
 - 默认 HH.MM.SS → DISP键循环切换: YY.MM.DD → YYYY.MMDD → HH.MM.SS
 - 闰年 02/29 → 03/01 正确，月末进位正确
 - SysTick 1ms时基，秒不丢
 - `*SET:DISPLAY OFF/ON` 熄屏/恢复
+- 消鬼影三段式刷新 (全灭→数据→选通)，显示无残影
 
 ### §3.3 流水显示 ✅
 
-- >8字符自动滚动，≤8字符静态2.5秒后自动返回
+- >8字符自动滚动，≤8字符静态显示2.5秒后自动返回
+- 所有MSG路径共用 `scroll_buf`，memset 清空防残留
 - FORMAT键 + `*SET:FORMAT` 切换 LEFT/RIGHT
-- SPEED键 2级速度 (500ms/250ms)
+- SPEED键 2级速度 (500ms/250ms)，滚动途中可切换
 - FORMAT RIGHT 时小数点跟随反转
 
 ### §3.4 闹钟 ✅
@@ -84,6 +88,7 @@ python virual_twin_panel.py
 - ADD 当前字段+1（带范围钳制）
 - SAVE / 长按FUNC(≥1s) 保存退出
 - 退出方式：仅 SAVE 或 FUNC长按（无超时自动退出）
+- **编辑备份/恢复**：进入编辑时备份当前值，FUNC模式切换保留编辑内容，仅退出时恢复备份
 
 ### §3.6 LED 指示 ✅
 
@@ -102,6 +107,8 @@ python virual_twin_panel.py
 
 ### §3.7 按键映射 ✅
 
+消抖 20ms，长按 ≥1s，I2C 极性反转修复。按键响应稳定无丢键。
+
 | 按键 | 位置 | 短按 | 长按 |
 |------|------|------|------|
 | ADD | K0 | 当前字段+1 | — |
@@ -118,7 +125,9 @@ python virual_twin_panel.py
 ### 蜂鸣器
 
 - 型号: PS1720P02 (C96061) 无源压电式
-- 驱动: PWM0 Gen3 Output7 (PK5), 2kHz / 50% 占空比
+- 驱动: PN1 通过 Timer0A ISR 在 2kHz 下翻转 GPIO
+- 闹钟响铃: 200ms响 / 200ms停 交替，最长 10s 自动停止
+- 远程蜂鸣: `*SET:BEEP 10-5000` (ms)，Timer0A ISR 统一驱动
 
 ### 7段数码管字体
 
@@ -126,18 +135,20 @@ python virual_twin_panel.py
 
 ---
 
-## 串口协议（14命令 + 8事件）
+## 串口协议（15命令 + 8事件）
 
 ```
 波特率: 115200, 8N1, 无流控
 行格式: 命令以 \r\n 结束
 大小写: 不敏感
-缩写:   MINute → MIN/MINU/MINUT/MINUTE（大写必输，小写可选）
+缩写:   MINute → MIN/MINU/MINUT/MINUTE（match_abbrev: 大写必输，小写可选）
 空格:   允许多空格及冒号前空格 (*SET : TIME = *SET:TIME)
 错误:   ERROR SYNTAX / PARAM / RANGE / LINE TOO LONG
+解析:   2-pass 关键词感知 (Pass1 扫描关键词建 kmap → Pass2 提取整数 → 按 kmap 分配)
+稳定:   ARMCC5 C89 安全 — 零手写指针 while 循环，全部替换为 strspn/strcspn/strtol/memcpy
 ```
 
-### PC→MCU 命令（14条）
+### PC→MCU 命令（15条）
 
 | 命令 | 参数 | 说明 |
 |------|------|------|
@@ -152,7 +163,8 @@ python virual_twin_panel.py
 | `*SET:LED` | hex2 (00=退出接管) | LED接管 |
 | `*SET:KEY` | NAME | 虚拟按键 |
 | `*SET:MODE` | DAY/NIGHT | 昼夜模式 |
-| `*SET:WEA` | temp code | 天气数据 |
+| `*SET:WEA` | temp code | 天气数据 (支持 UNK 未知代码) |
+| `*SET:GAME` | START/SCORE n/OVER n/QUIT | 贪吃蛇游戏控制 |
 | `*GET` | TIME/DATE/FORMAT/ALARM/DISP/MODE | 查询 |
 | `*PING` | — | 心跳 |
 
@@ -176,7 +188,7 @@ python virual_twin_panel.py
 ### P1 串口管理 ✅
 自动扫描COM口、波特率选择、连接/断开、状态栏实时显示（连接状态/FORMAT/MODE/uptime）
 
-### P2 控制面板 ✅ — 6个标签页
+### P2 控制面板 ✅ — 7个标签页
 
 | 标签页 | 功能 |
 |--------|------|
@@ -186,6 +198,7 @@ python virual_twin_panel.py
 | 📝 滚动消息 | 文本输入(≤32字)、字数统计、8位预览 |
 | ⚡ 快捷操作 | *RST(确认框)、PING、9步演示序列 |
 | 🔌 扩展功能 | NTP对时、天气获取、自动昼夜、数据图表 |
+| 🐍 贪吃蛇 | 20×15网格，MCU按键操控，PC渲染，分数同步MCU数码管 |
 
 ### P4 数字孪生 ✅
 8位7段数码管 + 8位LED + 10键虚拟按键，1:1镜像MCU状态。支持大小写字母显示。USER1/USER2 自动触发 NTP/天气。
@@ -216,6 +229,44 @@ python virual_twin_panel.py
 
 ---
 
+## 🐍 贪吃蛇游戏 (§4.3 扩展自定义功能) ✅
+
+MCU 物理按键操控 + PC PyQt5 渲染 + MCU 7-SEG 分数同步的联动小游戏。
+
+### 架构
+
+```
+MCU (main.c)                          PC (snake_game.py)
+─────────────                         ───────────────────
+*SET:GAME START  → 数码管 "--------"  →  20×15 网格画布初始蛇
+*EVT:KEY ADD/FUNC/SHIFT/DISP         →  蛇方向控制 (左/下/右/上)
+                ← *SET:GAME SCORE n   ←  吃食物 +1 分
+                ← *SET:GAME OVER n    ←  撞墙/撞自己 → GAME OVER
+                ← *SET:GAME QUIT      ←  退出游戏 → 回时钟
+```
+
+### 按键映射
+
+| 按键 | 游戏中功能 |
+|------|-----------|
+| K0 (ADD) | 蛇向左 |
+| K1 (FUNC) | 蛇向下 |
+| K2 (SHIFT) | 蛇向右 |
+| K6 (DISP) | 蛇向上 |
+| USER1 (PJ0) | 暂停/继续 |
+
+### 游戏特性
+
+- **20×15 网格**，150ms 刷新率，深绿背景配色
+- **蛇身**: 亮绿头部 (#8BC34A) + 标准绿身体 (#4CAF50)
+- **食物**: 红色圆点 (#FF5252)，随机刷新
+- **碰撞检测**: 墙壁 + 自身碰撞 → GAME OVER
+- **MCU 显示**: 游戏中数码管显示 "Sc 042  " 同步分数
+- **结束动画**: LED 全闪 2 次 (500ms)，数码管显示 "End 042"
+- **协议扩展**: `*SET:GAME START/SCORE/OVER/QUIT` 4 子命令
+
+---
+
 ## 稳定性修复记录
 
 | 问题 | 修复 | 提交 |
@@ -230,6 +281,32 @@ python virual_twin_panel.py
 | 段码位序错误（g→a vs a←g） | 用户字符串反转后计算 | 1f5d807 |
 | 蜂鸣器PN1→PK5 + DC→PWM | PWM0 Gen3 PK5 2kHz | 140f130 |
 
+### ARMCC5 编译器优化缺陷修复系列 (2026-06-25)
+
+ARM Compiler 5 V5.06 C89 模式下，指针 `while(*p)` 循环的值被缓存在寄存器中无法更新，导致死循环。全部替换为库函数或计数循环。
+
+| 问题 | 修复 | 提交 |
+|------|------|------|
+| `while(*t)` 死循环 (DATE/TIME/ALARM 解析器) | 2-pass 关键词感知解析器 (Pass1 扫描建 kmap, Pass2 提取整数) | 545dd6f |
+| `while(*x==' ')` 指针卡死 | 全部替换为 `x += strspn(x, " ")` | d2d26f6 |
+| `while(n<3)` 配合 `else{t++;}` 不推进 | 替换为 `t += strcspn(t, "0123456789")` | c7255ea |
+| kmap 寄存器缓存 → 12→02 时间值损坏 | `volatile int _k = kmap` 强制重载 | c7255ea |
+| `continue` 跳过 `for` 循环计数 | 全部 `continue` 替换为 if-else | 545dd6f |
+| `*RST` 子分支 `while(*p)` 死循环 | volatile 字符重读 + 超时保护 | d7ff029 |
+| 编译结果 | **10/10 协议测试通过 + TIMEOUT=0** | — |
+
+### 功能增强修复系列 (2026-06-25)
+
+| 问题 | 修复 | 提交 |
+|------|------|------|
+| 开机画面姓名/学号无闪烁 + LED不跟随 | LED跟随字符闪烁，每字符周期切换 | d7ff029 |
+| 编辑退出不恢复备份值 | 进入编辑时备份，退出时 (仅 SAVE/FUNC长按) 恢复 | d7ff029 |
+| MSG ≤8字符走后残留滚动数据 | 统一用 scroll_buf + memset 清空后再拷贝 | 5d4d023 |
+| 天气显示 <5s 过早退出 | 直接比较 `g_tick_ms >= end_ms`，避免 Tick_TimedOut 下溢 | 5d4d023 |
+| 显示鬼影残留 | 三段式刷新: 全灭→加载数据→选通 | 5d4d023 |
+| WEA 未知天气代码无处理 | 添加 UNK 回退分支 | d7ff029 |
+| 按键响应不灵敏 | 消抖 40→20ms，优化 key_scan 逻辑 | — |
+
 ---
 
 ## 项目进度
@@ -241,3 +318,6 @@ python virual_twin_panel.py
 | 第3周 | PC数字孪生、P2控制面板、E1-E4扩展 | ✅ |
 | 已完成 | §4.3 多闹钟调度器（自定义功能 8分） | ✅ |
 | 已完成 | P4 打磨（编辑高亮镜像、夜间4位限定） | ✅ |
+| 已完成 | 贪吃蛇游戏 (MCU按键操控 + PC渲染 + 分数同步) | ✅ |
+| 已完成 | ARMCC5 编译器安全重构 (10/10 TIMEOUT=0) | ✅ |
+| 已完成 | 外部25MHz晶振 + 消鬼影刷新 + MSG/天气超时修复 | ✅ |

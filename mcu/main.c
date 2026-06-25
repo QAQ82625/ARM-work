@@ -164,7 +164,8 @@ typedef enum {
     STATE_EDIT_ALARM,
     STATE_SCROLL,
     STATE_MSG_STATIC,
-    STATE_WEATHER
+    STATE_WEATHER,
+    STATE_GAME
 } sys_state_t;
 
 typedef enum {
@@ -254,9 +255,12 @@ uint8_t  g_ntp_synced;
 uint32_t g_ntp_last_sync_ms;
 
 char    g_msg_text[33];
-uint8_t g_msg_len;
-uint8_t g_msg_active;
+uint8_t  g_msg_len;
+uint8_t  g_msg_active;
 uint32_t g_msg_end_ms;
+
+volatile uint8_t  g_game_active;
+volatile uint16_t g_game_score;
 
 /* 按键状态机静态变量 */
 static ks_state_t    ks_state      = KS_IDLE;
@@ -820,6 +824,12 @@ static void Clock_FormatDisplay(void)
     char rev[DISP_LEN + 1];
     uint8_t dp;
     int8_t i;
+
+    if (g_state == STATE_GAME) {
+        sprintf(str, "Sc %03d  ", g_game_score);
+        Display_SetStr(str, 0x00);
+        return;
+    }
 
     if (g_night_mode) {
         str[0] = '0' + (g_time.h / 10);
@@ -1915,6 +1925,44 @@ void ProcessCommand(char *cmd)
             return;
         }
 
+        /* *SET:GAME START | SCORE nnn | OVER nnn | QUIT */
+        if (MATCH_CMD(p, "GAME", 4)) {
+            p = skip_to_next(p);
+            p += strspn(p, " ");
+            if (strncmp(p, "START", 5) == 0) {
+                g_game_active = 1;
+                g_state = STATE_GAME;
+                Display_SetStr("--------", 0x00);
+                UART_PutStrNB("OK\r\n"); return;
+            }
+            if (strncmp(p, "SCORE", 5) == 0) {
+                p = skip_to_next(p); p += strspn(p, " ");
+                g_game_score = (uint16_t)atoi(p);
+                { char buf[9]; sprintf(buf, "Sc %03d  ", g_game_score); Display_SetStr(buf, 0x00); }
+                UART_PutStrNB("OK\r\n"); return;
+            }
+            if (strncmp(p, "OVER", 4) == 0) {
+                int i; p = skip_to_next(p); p += strspn(p, " ");
+                g_game_score = (uint16_t)atoi(p);
+                { char buf[9]; sprintf(buf, "End%03d  ", g_game_score); Display_SetStr(buf, 0x00); }
+                for (i = 0; i < 2; i++) {
+                    PCA9557_Write(0x00); { volatile int _z=600000; while(_z) _z--; }
+                    PCA9557_Write(0xFF); { volatile int _z=600000; while(_z) _z--; }
+                }
+                g_game_active = 0;
+                g_state = STATE_CLOCK;
+                Clock_FormatDisplay();
+                UART_PutStrNB("OK\r\n"); return;
+            }
+            if (strncmp(p, "QUIT", 4) == 0) {
+                g_game_active = 0;
+                g_state = STATE_CLOCK;
+                Clock_FormatDisplay();
+                UART_PutStrNB("OK\r\n"); return;
+            }
+            UART_PutStrNB("ERROR PARAM\r\n"); return;
+        }
+
         UART_PutStrNB("ERROR SYNTAX\r\n");
         return;
     }
@@ -2181,13 +2229,13 @@ int main(void)
             flag_1s = 0;
             g_uptime_s++;
 
-            if (g_state == STATE_CLOCK || g_state == STATE_SCROLL) {
+            if (g_state == STATE_CLOCK || g_state == STATE_SCROLL || g_state == STATE_GAME) {
                 Time_Tick();
             }
 
-            Alarm_Check();
+            if (!g_game_active) Alarm_Check();
 
-            if (g_state == STATE_CLOCK) {
+            if (g_state == STATE_CLOCK || g_state == STATE_GAME) {
                 Clock_FormatDisplay();
             }
 
@@ -2228,7 +2276,15 @@ int main(void)
 
                 g_last_activity_ms = g_tick_ms;
 
-                if (kc == KEY_FUNC && g_alarm_beep_active) {
+                if (g_game_active) {
+                    /* 游戏模式: 仅方向键上报，其他键忽略 */
+                    if (kc == KEY_ADD || kc == KEY_FUNC ||
+                        kc == KEY_SHIFT || kc == KEY_DISP) {
+                        sprintf(buf, "*EVT:KEY %s\r\n", keycode_to_name(kc));
+                        UART_PutStrNB(buf);
+                    }
+                }
+                else if (kc == KEY_FUNC && g_alarm_beep_active) {
                     Alarm_Stop();
                 }
                 else if (g_state == STATE_SCROLL || g_state == STATE_MSG_STATIC) {

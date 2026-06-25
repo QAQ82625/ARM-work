@@ -16,6 +16,7 @@ from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from ntp_helper import fetch_ntp_commands, fetch_ntp_time, format_time
 from weather_helper import fetch_weather_command, fetch_weather
+from snake_game import SnakeGameWidget
 
 
 # ============================================================
@@ -373,6 +374,8 @@ class VirtualTwinPanel(QMainWindow):
         self.tab_widget.addTab(self._create_tab_message(),   "📝 滚动消息")
         self.tab_widget.addTab(self._create_tab_quick(),     "⚡ 快捷操作")
         self.tab_widget.addTab(self._create_tab_extensions(), "🔌 扩展功能")
+        self.game_widget = SnakeGameWidget(self.send_cmd)
+        self.tab_widget.addTab(self.game_widget, "🐍 贪吃蛇")
         main_layout.addWidget(self.tab_widget)
 
         # ── 4. 通信日志 ──
@@ -1546,6 +1549,14 @@ class VirtualTwinPanel(QMainWindow):
             parts = data.split()
             if len(parts) >= 2:
                 key_name = parts[1].upper()
+
+                # 贪吃蛇游戏模式: 方向键路由到游戏
+                if self.game_widget._game_running:
+                    self.game_widget.on_key(key_name)
+                    if key_name == "USER1":
+                        self.game_widget.pause_game()
+                    return
+
                 self.log(f"MCU按键: {key_name}", "event")
                 # Track edit mode state on PC for edit highlight mirror
                 if key_name == "FUNC":

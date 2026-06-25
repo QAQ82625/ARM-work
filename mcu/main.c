@@ -68,14 +68,14 @@
 #define DISP_MODE_DATE_SHORT    1
 #define DISP_MODE_DATE_LONG     2
 
-#define LED_HEARTBEAT           0x01
-#define LED_ALARM               0x02
-#define LED_EDIT                0x04
-#define LED_TX                  0x08
-#define LED_RX                  0x10
-#define LED_SUN                 0x20
-#define LED_RAI_SNO             0x40
-#define LED_HI_TEMP             0x80
+#define LED_HEARTBEAT           0x01  /* LED0: 心跳 1Hz */
+#define LED_ALARM               0x02  /* LED1: 闹钟 */
+#define LED_EDIT                0x04  /* LED2: 编辑模式 */
+#define LED_UART                0x08  /* LED3: UART TX+RX (合并) */
+#define LED_SUN                 0x10  /* LED4: 晴天 SUN */
+#define LED_RAI_SNO             0x20  /* LED5: 雨雪 RAI/SNO 1Hz呼吸 */
+#define LED_HI_TEMP             0x40  /* LED6: 高温 ≥30°C */
+#define LED_NTP                 0x80  /* LED7: NTP同步状态 */
 
 /* Convert g_date.wday (0=Sun,1=Mon..6=Sat) to alarm slot (0=Mon..6=Sun) */
 #define ALARM_IDX  ((uint8_t)(g_date.wday == 0 ? 6 : g_date.wday - 1))
@@ -106,6 +106,7 @@ static uint8_t seg7_encode(char ch)
     }
     if (ch == '-')  return 0x40;
     if (ch == '_')  return 0x08;
+    if (ch == 0xB0 || ch == '\'') return 0x63;  /* ° degree symbol (segments a,b,f,g) */
     if (ch == ' ')  return 0x00;
     return 0x00;
 }
@@ -213,6 +214,8 @@ volatile time_t_ g_time;
 volatile date_t  g_date;
 volatile alarm_t g_alarm;
 volatile uint8_t g_alarm_beep_active;
+static uint8_t  g_alarm_weather_beeps;    /* 雨雪额外响铃次数 */
+static uint8_t  g_alarm_weather_led;      /* 高温 LED 慢闪 */
 
 /* Multi-alarm 7-slot storage */
 volatile time_t_ g_alarm_slot[ALARM_SLOTS];
@@ -254,6 +257,10 @@ uint8_t g_weather_valid;
 uint8_t  g_ntp_synced;
 uint32_t g_ntp_last_sync_ms;
 
+/* USER1 long-press NTP status display */
+static uint32_t g_user1_press_ms;
+static uint8_t  g_user1_held;
+
 char    g_msg_text[33];
 uint8_t  g_msg_len;
 uint8_t  g_msg_active;
@@ -279,7 +286,8 @@ static date_t   edit_backup_date;
 static alarm_t  edit_backup_alarm;
 
 /* LED 静态变量 */
-static uint8_t led_pca9557_cache = 0xFF;
+static uint8_t  led_pca9557_cache = 0xFF;
+static uint32_t led_override_start_ms;  /* 接管开始时刻, 10s超时 */
 
 /* 蜂鸣器静态变量 */
 static uint32_t beep_start_ms = 0;
@@ -959,6 +967,16 @@ void Alarm_Check(void)
         g_alarm_beep_active = 1;
         beep_start_ms = g_tick_ms;
         UART_PutStrNB("*EVT:ALARM\r\n");
+        /* 天气-闹钟联动 */
+        if (g_weather_valid) {
+            if (strcmp(g_weather_cond, "RAI") == 0 ||
+                strcmp(g_weather_cond, "SNO") == 0) {
+                g_alarm_weather_beeps = 3;  /* 雨雪: 多响3声 */
+            }
+            if (g_weather_temp >= 30) {
+                g_alarm_weather_led = 1;    /* 高温: 8LED 慢闪 */
+            }
+        }
     }
 }
 
@@ -966,6 +984,8 @@ static void Alarm_Stop(void)
 {
     if (g_alarm_beep_active) {
         g_alarm_beep_active = 0;
+        g_alarm_weather_beeps = 0;
+        g_alarm_weather_led = 0;
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0);
         UART_PutStrNB("*EVT:ALARM_OFF\r\n");
     }
@@ -996,6 +1016,16 @@ static void LED_Update(void)
     }
 
     val = 0xFF;
+
+    /* 高温闹钟联动: 8LED 1.5s 周期慢闪 (750ms亮/750ms灭) */
+    if (g_alarm_weather_led && g_alarm_beep_active) {
+        if ((g_tick_ms / 750) & 0x01) {
+            val = 0x00;  /* 全亮 */
+            led_pca9557_cache = val;
+            PCA9557_Write(val);
+            return;
+        }
+    }
 
     /* Night mode: only heartbeat LED */
     if (g_night_mode) {
@@ -1029,25 +1059,36 @@ static void LED_Update(void)
         val &= ~LED_EDIT;
     }
 
-    /* LED3: UART 收发 */
+    /* LED3: UART TX+RX 合并 (亮100ms) */
     if (led_uart_tx_active || led_uart_rx_active) {
-        val &= ~LED_TX;
+        val &= ~LED_UART;
     }
 
-    /* LED4-7: weather/NTP */
+    /* LED4: 晴天 SUN */
     if (g_weather_valid) {
         if (strcmp(g_weather_cond, "SUN") == 0)
             val &= ~LED_SUN;
-        else if (strcmp(g_weather_cond, "RAI") == 0 ||
-                 strcmp(g_weather_cond, "SNO") == 0)
-            val &= ~LED_RAI_SNO;
-        if (g_weather_temp >= 30)
-            val &= ~LED_HI_TEMP;
     }
+
+    /* LED5: 雨雪 RAI/SNO — 1Hz 呼吸 (PWM 模拟: 250ms亮/750ms灭) */
+    if (g_weather_valid) {
+        if (strcmp(g_weather_cond, "RAI") == 0 ||
+            strcmp(g_weather_cond, "SNO") == 0) {
+            if ((g_tick_ms % 1000) < 250)
+                val &= ~LED_RAI_SNO;
+        }
+    }
+
+    /* LED6: 高温 ≥30°C */
+    if (g_weather_valid && g_weather_temp >= 30) {
+        val &= ~LED_HI_TEMP;
+    }
+
+    /* LED7: NTP 同步状态 */
     if (g_ntp_synced == 1) {
-        val &= ~LED_RX;
+        val &= ~LED_NTP;  /* SYNCED = 常亮 */
     } else if (g_ntp_synced == 2) {
-        if ((g_tick_ms / 500) & 0x01) val &= ~LED_RX;
+        if ((g_tick_ms / 500) & 0x01) val &= ~LED_NTP;  /* DRIFT = 1Hz闪 */
     }
 
     led_pca9557_cache = val;
@@ -1864,6 +1905,7 @@ void ProcessCommand(char *cmd)
             if (ep == p) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
             g_led_value = val;
             g_led_override = (g_led_value != 0);
+            if (g_led_override) led_override_start_ms = g_tick_ms;
             UART_PutStrNB("OK\r\n");
             return;
         }
@@ -2160,6 +2202,11 @@ int main(void)
             if (Tick_TimedOut(last_key_scan, 10)) {
                 last_key_scan = g_tick_ms;
                 Key_Scan();
+                /* USER1 long-press detection */
+                if (g_user1_held && (g_tick_ms - g_user1_press_ms) >= KEY_LONG_MS) {
+                    KeyQueue_Push(KEY_USER1, KEV_LONG);
+                    g_user1_held = 0;
+                }
             }
 
             if (Tick_TimedOut(last_led_update, 100)) {
@@ -2171,6 +2218,11 @@ int main(void)
                 if (led_uart_rx_active) {
                     led_uart_rx_active = 0;
                 }
+            }
+
+            /* 远程蜂鸣 — 10ms 粒度实现 ±20ms 精度 */
+            if (remote_beep_active && g_tick_ms >= remote_beep_end_ms) {
+                remote_beep_active = 0;
             }
         }
 
@@ -2203,25 +2255,35 @@ int main(void)
 
             /* 闹钟响铃 — Timer0A ISR toggles PN1 at 2kHz */
             if (g_alarm_beep_active) {
-                if (Tick_TimedOut(beep_start_ms, 10000)) {
+                uint32_t total_ms = 10000 + (uint32_t)g_alarm_weather_beeps * 400;
+                if (Tick_TimedOut(beep_start_ms, total_ms)) {
                     Alarm_Stop();
+                    g_alarm_weather_beeps = 0;
+                    g_alarm_weather_led = 0;
                 }
             }
 
-            /* 天气短显超时 5s */
+            /* LED 接管 10s 自动退出 */
+            if (g_led_override && Tick_TimedOut(led_override_start_ms, 10000)) {
+                g_led_override = 0;
+                g_led_value   = 0;
+            }
+
+            /* 天气短显超时 5s / 数据过期闪烁 (500ms周期) */
             if (g_state == STATE_WEATHER) {
                 if (g_tick_ms >= g_msg_end_ms) {
                     g_state = STATE_CLOCK;
+                    disp_blink_mask = 0;
                     Clock_FormatDisplay();
+                }
+                /* 数据过期 (>120s) 闪烁 */
+                if (g_weather_valid && g_weather_age >= 120) {
+                    disp_blink_mask = ((g_tick_ms / 500) & 0x01) ? 0xFF : 0x00;
+                } else {
+                    disp_blink_mask = 0;
                 }
             }
 
-            /* 远程蜂鸣 */
-            if (remote_beep_active) {
-                if (g_tick_ms >= remote_beep_end_ms) {
-                    remote_beep_active = 0;
-                }
-            }
         }
 
         /* 1秒 任务 */
@@ -2339,7 +2401,32 @@ int main(void)
                         { char buf[32]; sprintf(buf, "*EVT:ALARM:SET %s %s\r\n", DOW_NAMES[idx + 1], was_on ? "OFF" : "ON"); UART_PutStrNB(buf); }
                         if (!(g_alarm_slot_enabled_mask & (1 << idx))) Alarm_Stop();
                     } else if (kc == KEY_USER1 && ke == KEV_DOWN) {
-                        /* PC will trigger NTP sync */
+                        g_user1_held = 1;
+                        g_user1_press_ms = g_tick_ms;
+                    } else if (kc == KEY_USER1 && ke == KEV_UP) {
+                        g_user1_held = 0;
+                    } else if (kc == KEY_USER1 && ke == KEV_LONG) {
+                        /* Long-press USER1: display NTP sync status */
+                        g_user1_held = 0;
+                        {
+                            char ntp_disp[9];
+                            uint8_t hours;
+                            const char *st;
+                            if (g_ntp_synced == 0) {
+                                hours = 0; st = "NO";
+                            } else {
+                                hours = (uint8_t)((g_tick_ms - g_ntp_last_sync_ms) / 3600000UL);
+                                if (hours > 9) hours = 9;
+                                st = (g_ntp_synced == 1) ? "OK" : "DR";
+                            }
+                            if (g_ntp_synced == 0)
+                                sprintf(ntp_disp, "_.SY.%s", st);
+                            else
+                                sprintf(ntp_disp, "%1u.SY.%s", hours, st);
+                            Display_SetStr(ntp_disp, 0x00);
+                            g_state = STATE_WEATHER;
+                            g_msg_end_ms = g_tick_ms + 3000;
+                        }
                     }
                 }
 

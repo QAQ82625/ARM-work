@@ -8,6 +8,7 @@
 import sys
 import os
 import csv
+import time
 import serial
 import serial.tools.list_ports
 from datetime import datetime
@@ -436,9 +437,19 @@ class VirtualTwinPanel(QMainWindow):
         self.fmt_indicator.setStyleSheet("color: #4ECDC4; font-weight: bold;")
         self.status_bar.addPermanentWidget(self.fmt_indicator)
 
+        self.alarm_indicator = QLabel("⏰ 闹钟: --")
+        self.alarm_indicator.setStyleSheet("color: #888; font-weight: bold;")
+        self.status_bar.addPermanentWidget(self.alarm_indicator)
+
         self.uptime_indicator = QLabel("")
         self.uptime_indicator.setStyleSheet("color: #888;")
         self.status_bar.addPermanentWidget(self.uptime_indicator)
+
+        # 1Hz PING 定时器 + 3s 超时检测
+        self._ping_timer = QTimer(self)
+        self._ping_timer.timeout.connect(self._ping_tick)
+        self._last_pong_time = 0.0
+        self._ping_offline = False
 
     # ── 状态栏更新方法 ──────────────────────
     def _set_connection_status(self, connected, port=""):
@@ -493,7 +504,7 @@ class VirtualTwinPanel(QMainWindow):
 
         row1 = QHBoxLayout()
         row1.setAlignment(Qt.AlignCenter)
-        led1_labels = ['❤️ 心跳', '⏰ 闹钟', '✏️ 编辑', '📤 TX']
+        led1_labels = ['❤️ 心跳', '⏰ 闹钟', '✏️ 编辑', '📤📥 UART']
         self.leds1 = []
         for label in led1_labels:
             led = SimpleLED(label)
@@ -503,7 +514,7 @@ class VirtualTwinPanel(QMainWindow):
 
         row2 = QHBoxLayout()
         row2.setAlignment(Qt.AlignCenter)
-        led2_labels = ['📥 RX/🕐 NTP', '☀️ 晴天', '🌧️ 雨雪', '🔥 高温']
+        led2_labels = ['☀️ 晴天', '🌧️ 雨雪', '🔥 高温', '🕐 NTP']
         self.leds2 = []
         for label in led2_labels:
             led = SimpleLED(label)
@@ -621,6 +632,25 @@ class VirtualTwinPanel(QMainWindow):
         rt_row.addWidget(self.lbl_mcu_date)
         rt_row.addStretch()
         layout.addLayout(rt_row)
+
+        # 多参数组合 + 缩写演示
+        combo_row = QHBoxLayout()
+        combo_row.addWidget(QLabel("参数组合:"))
+        self.combo_date_fmt = QComboBox()
+        self.combo_date_fmt.addItems([
+            "YEAR MONTH DATE",
+            "YEAR DATE",
+            "MONTH DATE",
+            "YEAR MONTH",
+        ])
+        self.combo_date_fmt.setToolTip("选择参数组合后点击 [演示发送]")
+        combo_row.addWidget(self.combo_date_fmt)
+        btn_demo_abbrev = QPushButton("演示缩写发送")
+        btn_demo_abbrev.setToolTip("发送: *SET:DATE y 2026 mon 6 d 8 (小写可省略)")
+        btn_demo_abbrev.clicked.connect(self._on_demo_abbrev)
+        combo_row.addWidget(btn_demo_abbrev)
+        combo_row.addStretch()
+        layout.addLayout(combo_row)
 
         layout.addStretch()
         w.setLayout(layout)
@@ -1048,6 +1078,8 @@ class VirtualTwinPanel(QMainWindow):
             self.serial_thread.disconnect()
             self.connect_btn.setText("连接")
             self._set_connection_status(False)
+            self._ping_timer.stop()
+            self._ping_offline = False
             self.log("串口已断开", "info")
         else:
             text = self.com_combo.currentText()
@@ -1064,6 +1096,10 @@ class VirtualTwinPanel(QMainWindow):
                     self._update_disp_btns(0)
                     QTimer.singleShot(500, lambda: self.send_cmd("*GET:ALARM"))
                     QTimer.singleShot(700, lambda: self.send_cmd("*GET:MODE"))
+                    # 启动 1Hz PING
+                    self._last_pong_time = time.time()
+                    self._ping_offline = False
+                    self._ping_timer.start(1000)
                 else:
                     self.log(f"连接失败: {msg}", "error")
                     QMessageBox.critical(self, "错误", msg)
@@ -1080,6 +1116,31 @@ class VirtualTwinPanel(QMainWindow):
         else:
             self.log(f"发送失败: {cmd}", "error")
             return False
+
+    def _ping_tick(self):
+        """1Hz PING + 3s 超时离线检测"""
+        now = time.time()
+        if self._ping_offline:
+            # 重试: 发 PING, 若收到 PONG 则恢复
+            self.send_cmd("*PING")
+            return
+        if now - self._last_pong_time > 3.0:
+            # 3s 无 PONG → 标记离线
+            self._ping_offline = True
+            self._set_connection_status(False)
+            self.status_bar.showMessage("⚠ 心跳超时 (离线)")
+            self.log("心跳超时: MCU 离线", "error")
+            return
+        self.send_cmd("*PING")
+
+    def _set_alarm_indicator(self, enabled):
+        """更新状态栏 ALARM 使能指示"""
+        if enabled:
+            self.alarm_indicator.setText("⏰ 闹钟: ✓")
+            self.alarm_indicator.setStyleSheet("color: #FF6B6B; font-weight: bold;")
+        else:
+            self.alarm_indicator.setText("⏰ 闹钟: ✗")
+            self.alarm_indicator.setStyleSheet("color: #888; font-weight: bold;")
 
     def _on_speed_toggled(self, checked):
         """滚动速度 radio 切换 → 发送 *SET:KEY SPEED 到 MCU"""
@@ -1107,6 +1168,23 @@ class VirtualTwinPanel(QMainWindow):
     def _on_get_time_date(self):
         self.send_cmd("*GET:TIME")
         QTimer.singleShot(200, lambda: self.send_cmd("*GET:DATE"))
+
+    def _on_demo_abbrev(self):
+        """演示缩写语法: 仅大写字母必输, 小写可省略"""
+        y = self.sp_year.value()
+        m = self.sp_month.value()
+        d = self.sp_day.value()
+        fmt = self.combo_date_fmt.currentText()
+        # 构造缩写命令: 仅大写字母必输
+        abbrev_map = {
+            "YEAR MONTH DATE": f"*SET:DATE y {y} mon {m} d {d}",
+            "YEAR DATE":       f"*SET:DATE y {y} d {d}",
+            "MONTH DATE":      f"*SET:DATE mon {m} d {d}",
+            "YEAR MONTH":      f"*SET:DATE y {y} mon {m}",
+        }
+        cmd = abbrev_map.get(fmt, f"*SET:DATE Y {y} MON {m} D {d}")
+        self.log(f"缩写演示 [{fmt}]: {cmd}", "event")
+        self.send_cmd(cmd)
 
     def _on_fill_pc_time(self):
         from datetime import datetime
@@ -1540,7 +1618,13 @@ class VirtualTwinPanel(QMainWindow):
                     self._set_uptime_display(int(parts[1]))
                 except ValueError:
                     pass
-            self.log("心跳响应", "info")
+            # 更新心跳时间戳, 恢复在线状态
+            self._last_pong_time = time.time()
+            if self._ping_offline:
+                self._ping_offline = False
+                self._set_connection_status(True)
+                self.status_bar.showMessage("已恢复连接", 3000)
+                self.log("心跳恢复: MCU 重新在线", "success")
             self.leds1[0].set_state(True)
             QTimer.singleShot(100, lambda: self.leds1[0].set_state(False))
 
@@ -1647,6 +1731,7 @@ class VirtualTwinPanel(QMainWindow):
             if len(parts) >= 2:
                 state = parts[1].upper()
                 self._alarm_enabled = (state == "ON")
+                self._set_alarm_indicator(self._alarm_enabled)
                 self._update_alarm_ui()
 
         # ── OK 响应 ──

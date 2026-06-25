@@ -269,6 +269,11 @@ static uint8_t       ks_user_prev;
 static edit_field_t edit_field;
 static uint8_t      edit_modified;
 
+/* 编辑备份 */
+static time_t_  edit_backup_time;
+static date_t   edit_backup_date;
+static alarm_t  edit_backup_alarm;
+
 /* LED 静态变量 */
 static uint8_t led_pca9557_cache = 0xFF;
 
@@ -1098,71 +1103,84 @@ void Boot_Sequence(void)
     int i;
 
     for (phase = 0; phase < 2; phase++) {
-        /* 全亮 */
         for (i = 0; i < DISP_LEN; i++) disp_buf[i] = 0xFF;
-        disp_blink_mask = 0;
         PCA9557_Write(0x00);
-        start = g_tick_ms;
-        last_disp = 0;
-        while (g_tick_ms - start < 500) {
-            /* 每 2ms 刷新一位数码管（消除闪烁） */
-            if (Tick_TimedOut(last_disp, 2)) {
-                last_disp = g_tick_ms;
-                Display_Refresh();
-            }
-            if (flag_10ms) { flag_10ms = 0; LED_Update(); }
+        start = g_tick_ms; last_disp = 0;
+        while (g_tick_ms - start < 350) {
+            if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+            if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0x00); }
         }
-
-        /* 全灭 */
         for (i = 0; i < DISP_LEN; i++) disp_buf[i] = 0x00;
         PCA9557_Write(0xFF);
-        start = g_tick_ms;
-        last_disp = 0;
-        while (g_tick_ms - start < 500) {
-            if (Tick_TimedOut(last_disp, 2)) {
-                last_disp = g_tick_ms;
-                Display_Refresh();
-            }
-            if (flag_10ms) { flag_10ms = 0; LED_Update(); }
+        start = g_tick_ms; last_disp = 0;
+        while (g_tick_ms - start < 350) {
+            if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+            if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0xFF); }
         }
     }
+    for (i = 0; i < DISP_LEN; i++) disp_buf[i] = 0xFF;
+    PCA9557_Write(0x00);
+    start = g_tick_ms; last_disp = 0;
+    while (g_tick_ms - start < 350) {
+        if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0x00); }
+    }
 
-    /* 学号: 31910672 */
+    /* 学号: 31910672 闪烁 */
     Display_SetStr("31910672", 0x00);
-    start = g_tick_ms;
-    last_disp = 0;
-    while (g_tick_ms - start < 900) {
-        if (Tick_TimedOut(last_disp, 2)) {
-            last_disp = g_tick_ms;
-            Display_Refresh();
-        }
-        if (flag_10ms) { flag_10ms = 0; LED_Update(); }
+    PCA9557_Write(0x00);
+    start = g_tick_ms; last_disp = 0;
+    while (g_tick_ms - start < 350) {
+        if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0x00); }
+    }
+    for (i = 0; i < DISP_LEN; i++) disp_buf[i] = 0x00;
+    PCA9557_Write(0xFF);
+    start = g_tick_ms; last_disp = 0;
+    while (g_tick_ms - start < 200) {
+        if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0xFF); }
+    }
+    Display_SetStr("31910672", 0x00);
+    PCA9557_Write(0x00);
+    start = g_tick_ms; last_disp = 0;
+    while (g_tick_ms - start < 350) {
+        if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0x00); }
     }
 
-    /* 姓名: HUZHENYE */
+    /* 姓名: HUZHENYE 闪烁 */
     Display_SetStr("HUZHENYE", 0x00);
-    start = g_tick_ms;
-    last_disp = 0;
-    while (g_tick_ms - start < 900) {
-        if (Tick_TimedOut(last_disp, 2)) {
-            last_disp = g_tick_ms;
-            Display_Refresh();
-        }
-        if (flag_10ms) { flag_10ms = 0; LED_Update(); }
+    PCA9557_Write(0x00);
+    start = g_tick_ms; last_disp = 0;
+    while (g_tick_ms - start < 350) {
+        if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0x00); }
+    }
+    for (i = 0; i < DISP_LEN; i++) disp_buf[i] = 0x00;
+    PCA9557_Write(0xFF);
+    start = g_tick_ms; last_disp = 0;
+    while (g_tick_ms - start < 200) {
+        if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0xFF); }
+    }
+    Display_SetStr("HUZHENYE", 0x00);
+    PCA9557_Write(0x00);
+    start = g_tick_ms; last_disp = 0;
+    while (g_tick_ms - start < 350) {
+        if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
+        if (flag_10ms) { flag_10ms = 0; LED_Update(); PCA9557_Write(0x00); }
     }
 
-    /* 版本号持续 1s */
+    /* 版本号 1.5s */
     Display_SetStr("V1.0    ", 0x00);
-    start = g_tick_ms;
-    last_disp = 0;
-    while (g_tick_ms - start < 1000) {
-        if (Tick_TimedOut(last_disp, 2)) {
-            last_disp = g_tick_ms;
-            Display_Refresh();
-        }
+    start = g_tick_ms; last_disp = 0;
+    while (g_tick_ms - start < 1500) {
+        if (Tick_TimedOut(last_disp, 2)) { last_disp = g_tick_ms; Display_Refresh(); }
         if (flag_10ms) { flag_10ms = 0; LED_Update(); }
     }
 }
+
 
 /* ================================================================
  * 编辑 FSM
@@ -1254,6 +1272,12 @@ static void Edit_Exit(uint8_t save)
     const char *type;
     uint16_t val;
 
+    if (!save) {
+        memcpy(&g_time,  &edit_backup_time,  sizeof(time_t_));
+        memcpy(&g_date,  &edit_backup_date,  sizeof(date_t));
+        memcpy(&g_alarm, &edit_backup_alarm, sizeof(alarm_t));
+    }
+
     if (save && edit_modified) {
         val = 0;
         if (g_state == STATE_EDIT_DATE_LONG || g_state == STATE_EDIT_DATE) {
@@ -1303,34 +1327,11 @@ void Edit_HandleKey(key_code_t code, key_event_t evt)
     case KEY_FUNC:
         if (evt == KEV_LONG) { Edit_Exit(1); }
         else {
-            if (edit_modified && (g_state == STATE_EDIT_DATE_LONG ||
-                                  g_state == STATE_EDIT_DATE)) {
-                char buf[48]; uint16_t v;
-                v = g_date.y * 10000 + g_date.m * 100 + g_date.d;
-                sprintf(buf, "*EVT:EDIT DATE %u\r\n", v);
-                UART_PutStrNB(buf);
-            } else if (edit_modified && g_state == STATE_EDIT_TIME) {
-                char buf[48]; uint16_t v;
-                v = g_time.h * 10000 + g_time.mi * 100 + g_time.s;
-                sprintf(buf, "*EVT:EDIT TIME %u\r\n", v);
-                UART_PutStrNB(buf);
-            } else if (edit_modified && g_state == STATE_EDIT_ALARM) {
-                char buf[48]; uint16_t v;
-                v = g_alarm.t.h * 10000 + g_alarm.t.mi * 100 + g_alarm.t.s;
-                sprintf(buf, "*EVT:EDIT ALARM %u\r\n", v);
-                UART_PutStrNB(buf);
-                { uint8_t idx = ALARM_IDX;
-                  if (idx < ALARM_SLOTS) {
-                    g_alarm_slot[idx].h = g_alarm.t.h;
-                    g_alarm_slot[idx].mi = g_alarm.t.mi;
-                    g_alarm_slot[idx].s = g_alarm.t.s; }
-                }
-            }
             edit_modified = 0;
             if (g_state == STATE_EDIT_DATE_LONG) Edit_Enter(STATE_EDIT_DATE);
             else if (g_state == STATE_EDIT_DATE) Edit_Enter(STATE_EDIT_TIME);
             else if (g_state == STATE_EDIT_TIME) Edit_Enter(STATE_EDIT_ALARM);
-            else { g_state = STATE_CLOCK; disp_blink_mask = 0; g_edit_pos = 0; Clock_FormatDisplay(); }
+            else { Edit_Exit(0); }
         }
         break;
 
@@ -1907,7 +1908,7 @@ void ProcessCommand(char *cmd)
             else if (match_abbrev(p, "RAI")) strcpy(g_weather_cond, "RAI");
             else if (match_abbrev(p, "SNO")) strcpy(g_weather_cond, "SNO");
             else if (match_abbrev(p, "FOG")) strcpy(g_weather_cond, "FOG");
-            else { UART_PutStrNB("ERROR PARAM\r\n"); return; }
+            else { strcpy(g_weather_cond, "UNK"); }
             g_weather_valid = 1;
             g_weather_age = 0;
             UART_PutStrNB("OK\r\n");
@@ -2249,6 +2250,9 @@ int main(void)
                 }
                 else if (g_state == STATE_CLOCK) {
                     if (kc == KEY_FUNC && ke == KEV_DOWN) {
+                        memcpy(&edit_backup_time,  &g_time,  sizeof(time_t_));
+                        memcpy(&edit_backup_date,  &g_date,  sizeof(date_t));
+                        memcpy(&edit_backup_alarm, &g_alarm, sizeof(alarm_t));
                         Edit_Enter(STATE_EDIT_DATE_LONG);
                     } else if (kc == KEY_USER2 && ke == KEV_DOWN) {
                         if (g_weather_valid) {

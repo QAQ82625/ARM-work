@@ -1421,7 +1421,7 @@ void ProcessCommand(char *cmd)
     /* *RST [DATE|TIME|ALARM] */
     if (strncmp(cmd, "*RST", 4) == 0) {
         p = cmd + 4;
-        while (*p == ' ') p++;
+        p += strspn(p, " ");
         if (*p == '\0') {
             g_time.h = 0; g_time.mi = 0; g_time.s = 0;
             g_date.y = 2026; g_date.m = 6; g_date.d = 15; g_date.wday = 1;
@@ -1486,7 +1486,7 @@ void ProcessCommand(char *cmd)
     /* *SET:... */
     if (strncmp(cmd, "*SET:", 5) == 0) {
         p = cmd + 5;
-        while (*p == ' ') p++;  /* skip space between *SET: and sub-command */
+        p += strspn(p, " ");  /* skip space between *SET: and sub-command */
 
         /* *SET:DATE — library-based parser (strspn/strcspn/strtol only) */
         if (MATCH_CMD(p, "DATE", 4)) {
@@ -1760,7 +1760,7 @@ void ProcessCommand(char *cmd)
         /* *SET:DISPlay ON/OFF */
         if (MATCH_CMD(p, "DISPLAY", 4) || MATCH_CMD(p, "DISP", 4)) {
             p = skip_to_next(p);
-            while (*p == ' ') p++;
+            p += strspn(p, " ");
             if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0)
                 { disp_on = 1; UART_PutStrNB("OK\r\n"); return; }
             if (strncmp(p, "OFF", 3) == 0 || strncmp(p, "off", 3) == 0)
@@ -1771,7 +1771,7 @@ void ProcessCommand(char *cmd)
         /* *SET:FORMAT LEFT/RIGHT */
         if (MATCH_CMD(p, "FORMAT", 6)) {
             p = skip_to_next(p);
-            while (*p == ' ') p++;
+            p += strspn(p, " ");
             if (strncmp(p, "LEFT", 4) == 0)  { g_format = FMT_LEFT;  scroll_dir = 0; UART_PutStrNB("OK\r\n"); return; }
             if (strncmp(p, "RIGHT", 5) == 0) { g_format = FMT_RIGHT; scroll_dir = 1; UART_PutStrNB("OK\r\n"); return; }
             UART_PutStrNB("ERROR PARAM\r\n"); return;
@@ -1782,7 +1782,7 @@ void ProcessCommand(char *cmd)
             uint8_t len;
 
             msg_text = p + 3;
-            while (*msg_text == ' ') msg_text++;
+            msg_text += strspn(msg_text, " ");
             if (*msg_text == '\0') { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             len = (uint8_t)strlen(msg_text);
             if (len > 32) len = 32;
@@ -1811,7 +1811,7 @@ void ProcessCommand(char *cmd)
         if (MATCH_CMD(p, "BEEP", 4)) {
             uint16_t ms;
             p = skip_to_next(p);
-            while (*p == ' ') p++;
+            p += strspn(p, " ");
             ms = (uint16_t)atoi(p);
             if (ms < 10 || ms > 5000) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
             remote_beep_active = 1;
@@ -1825,7 +1825,7 @@ void ProcessCommand(char *cmd)
             char   *ep;
             uint8_t val;
             p = skip_to_next(p);
-            while (*p == ' ') p++;
+            p += strspn(p, " ");
             if (*p == '\0') { UART_PutStrNB("ERROR PARAM\r\n"); return; }
             val = 0; ep = p;
             while (*ep) {
@@ -1846,7 +1846,7 @@ void ProcessCommand(char *cmd)
         /* *SET:KEY <NAME> */
         if (MATCH_CMD(p, "KEY", 3)) {
             p = skip_to_next(p);
-            while (*p == ' ') p++;
+            p += strspn(p, " ");
             key_code_t kc = KEY_NONE;
             if (strncmp(p, "FUNC", 4) == 0 || strncmp(p, "func", 4) == 0)   kc = KEY_FUNC;
             else if (strncmp(p, "SHIFT", 5) == 0) kc = KEY_SHIFT;
@@ -1868,7 +1868,7 @@ void ProcessCommand(char *cmd)
         /* *SET:MODE DAY/NIGHT */
         if (MATCH_CMD(p, "MODE", 4)) {
             p = skip_to_next(p);
-            while (*p == ' ') p++;
+            p += strspn(p, " ");
             if (strncmp(p, "DAY", 3) == 0 || strncmp(p, "day", 3) == 0)
                 { g_night_mode = 0; g_mode_day = 1;
                   UART_PutStrNB("*EVT:MODE DAY\r\nOK\r\n"); return; }
@@ -1881,12 +1881,12 @@ void ProcessCommand(char *cmd)
         /* *SET:WEA <temp> <COND> */
         if (MATCH_CMD(p, "WEA", 3)) {
             p = skip_to_next(p);
-            while (*p == ' ') p++;
+            p += strspn(p, " ");
             int t = atoi(p);
             if (t < -40 || t > 50) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
             g_weather_temp = (int8_t)t;
             p = skip_to_next(p);
-            while (*p == ' ') p++;
+            p += strspn(p, " ");
             if (match_abbrev(p, "SUN"))      strcpy(g_weather_cond, "SUN");
             else if (match_abbrev(p, "CLD")) strcpy(g_weather_cond, "CLD");
             else if (match_abbrev(p, "OVC")) strcpy(g_weather_cond, "OVC");
@@ -1907,7 +1907,7 @@ void ProcessCommand(char *cmd)
     /* *GET:... */
     if (strncmp(cmd, "*GET:", 5) == 0) {
         p = cmd + 5;
-        while (*p == ' ') p++;
+        p += strspn(p, " ");
         if (*p == '\0' || match_abbrev(p, "TIME")) {
             char resp[48];
             if (g_format == FMT_RIGHT) {

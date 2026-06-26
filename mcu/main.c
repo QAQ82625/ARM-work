@@ -230,7 +230,9 @@ volatile uint8_t g_weather_age;
 volatile uint8_t g_suppress_key_evt;
 
 /* Debug: marker set at each processing stage — inspect with Keil debugger if hung */
-volatile uint8_t g_dbg;
+volatile uint8_t  g_dbg;
+volatile uint8_t  g_dbg2;
+volatile uint16_t g_dbg_len;
 
 static key_event_t key_queue_evt[KEY_QUEUE_SIZE];
 static key_code_t  key_queue_code[KEY_QUEUE_SIZE];
@@ -725,6 +727,8 @@ void ExtractLine(void)
     }
 
     cmd_line[idx] = '\0';
+    g_dbg = (uint8_t)(0xE0 | (idx & 0x0F));
+    g_dbg_len = idx;
 
     if (idx >= LINE_MAX - 1 && uart_rx_tail != uart_rx_head) {
         while (uart_rx_tail != uart_rx_head) {
@@ -1477,6 +1481,9 @@ void ProcessCommand(char *cmd)
     char *p;
 
     g_dbg = 0x10;
+    g_dbg_len = (uint16_t)strlen(cmd);
+    /* Verify null terminator: if cmd_line[idx] != 0, stack was corrupted */
+    g_dbg2 = (uint8_t)cmd[g_dbg_len];
     if (cmd[0] == '\0') return;
 
     /* *PING */

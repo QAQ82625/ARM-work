@@ -619,18 +619,19 @@ void UART_Init(uint32_t baud)
 
 static void UART_PutStr(const char *msg)
 {
-    int i, n = (int)strlen(msg);
-    for (i = 0; i < n; i++) {
-        UARTCharPut(UART0_BASE, msg[i]);
+    const volatile char *m = (const volatile char *)msg;
+    while (*m) {
+        UARTCharPut(UART0_BASE, (char)*m);
+        m++;
     }
 }
 
 void UART_PutStrNB(const char *msg)
 {
-    int i, n = (int)strlen(msg);
-    for (i = 0; i < n; i++) {
-        /* 使用阻塞版本：等待 FIFO 有空间再写入，避免字符丢弃 */
-        UARTCharPut(UART0_BASE, msg[i]);
+    const volatile char *m = (const volatile char *)msg;
+    while (*m) {
+        UARTCharPut(UART0_BASE, (char)*m);
+        m++;
     }
     led_uart_tx_active = 1;
 }
@@ -1598,6 +1599,7 @@ void ProcessCommand(char *cmd)
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
+                { volatile char *r = *(volatile char **)&t; t = r; }
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
@@ -1687,6 +1689,7 @@ void ProcessCommand(char *cmd)
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
+                { volatile char *r = *(volatile char **)&t; t = r; }
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
@@ -1788,6 +1791,7 @@ void ProcessCommand(char *cmd)
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
+                { volatile char *r = *(volatile char **)&t; t = r; }
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);

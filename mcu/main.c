@@ -2351,17 +2351,19 @@ int main(void)
                     Alarm_Stop();
                 }
                 else if (g_state == STATE_SCROLL || g_state == STATE_MSG_STATIC) {
-                    if (kc == KEY_SPEED && ke == KEV_DOWN) {
-                        g_scroll_speed_level = !g_scroll_speed_level;
-                        UART_PutStrNB(g_scroll_speed_level ? "*EVT:SPEED FAST\r\n" : "*EVT:SPEED SLOW\r\n");
-                    } else if (kc == KEY_FORMAT && ke == KEV_DOWN && !g_night_mode) {
-                        g_format = (g_format == FMT_LEFT) ? FMT_RIGHT : FMT_LEFT;
-                        scroll_dir = !scroll_dir;
-                    } else if (kc != KEY_FUNC && kc != KEY_SHIFT &&
-                               kc != KEY_ADD && kc != KEY_SAVE) {
-                        memset(scroll_buf, 0, sizeof(scroll_buf));
-                        scroll_len = 0;
-                        g_state = STATE_CLOCK; g_msg_active = 0; Clock_FormatDisplay();
+                    if (ke == KEV_DOWN) {
+                        if (kc == KEY_SPEED) {
+                            g_scroll_speed_level = !g_scroll_speed_level;
+                            UART_PutStrNB(g_scroll_speed_level ? "*EVT:SPEED FAST\r\n" : "*EVT:SPEED SLOW\r\n");
+                        } else if (kc == KEY_FORMAT && !g_night_mode) {
+                            g_format = (g_format == FMT_LEFT) ? FMT_RIGHT : FMT_LEFT;
+                            scroll_dir = !scroll_dir;
+                        } else if (kc != KEY_FUNC && kc != KEY_SHIFT &&
+                                   kc != KEY_ADD && kc != KEY_SAVE) {
+                            memset(scroll_buf, 0, sizeof(scroll_buf));
+                            scroll_len = 0;
+                            g_state = STATE_CLOCK; g_msg_active = 0; Clock_FormatDisplay();
+                        }
                     }
                 }
                 else if (g_state >= STATE_EDIT_DATE_LONG && g_state <= STATE_EDIT_ALARM) {

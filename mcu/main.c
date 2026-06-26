@@ -234,9 +234,6 @@ volatile uint8_t  g_dbg;
 volatile uint8_t  g_dbg2;
 volatile uint16_t g_dbg_len;
 
-/* Force ARMCC5 to reload parse pointer from memory each iteration */
-static volatile char *g_pp;
-
 static key_event_t key_queue_evt[KEY_QUEUE_SIZE];
 static key_code_t  key_queue_code[KEY_QUEUE_SIZE];
 static volatile uint8_t key_queue_wr;
@@ -1476,6 +1473,11 @@ static char *skip_to_next(char *s)
     return s;
 }
 
+/* ARMCC5 V5.06 C89: optimization causes register-caching defects
+   in this large multi-path parser. Disable optimization to force
+   every memory access through the stack — stable & correct. */
+#pragma push
+#pragma O0
 void ProcessCommand(char *cmd)
 {
     char *p;
@@ -1598,18 +1600,15 @@ void ProcessCommand(char *cmd)
             }
 
             /* Pass 2: extract all integers at once */
-            g_pp = (volatile char *)(p + 4);
+            t = (char *)(p + 4);
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
-                char *ep;
-                g_pp = (volatile char *)((char *)g_pp + strcspn((char *)g_pp, "0123456789"));
-                if (!*(char *)g_pp) break;
-                vals[wi] = (int)strtol((char *)g_pp, &ep, 10);
-                g_pp = (volatile char *)ep;
+                t += strcspn(t, "0123456789");
+                if (!*t) break;
+                vals[wi] = (int)strtol(t, &t, 10);
                 wi++;
             }
-            /* end DATE Pass2 */
 
             if (wi == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
 
@@ -1689,16 +1688,14 @@ void ProcessCommand(char *cmd)
             }
 
             /* Pass 2: extract integers */
-            g_pp = (volatile char *)(p + 4);
-            g_pp = (volatile char *)((char *)g_pp + strspn((char *)g_pp, " "));
+            t = (char *)(p + 4);
+            t += strspn(t, " ");
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
-                char *ep;
-                g_pp = (volatile char *)((char *)g_pp + strcspn((char *)g_pp, "0123456789"));
-                if (!*(char *)g_pp) break;
-                vals[wi] = (int)strtol((char *)g_pp, &ep, 10);
-                g_pp = (volatile char *)ep;
+                t += strcspn(t, "0123456789");
+                if (!*t) break;
+                vals[wi] = (int)strtol(t, &t, 10);
                 wi++;
             }
             /* end TIME Pass2 */
@@ -1793,19 +1790,16 @@ void ProcessCommand(char *cmd)
             }
 
             /* Pass 2: extract integers */
-            g_pp = (volatile char *)(p + 5);
-            g_pp = (volatile char *)((char *)g_pp + strspn((char *)g_pp, " "));
+            t = (char *)(p + 5);
+            t += strspn(t, " ");
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
-                char *ep;
-                g_pp = (volatile char *)((char *)g_pp + strcspn((char *)g_pp, "0123456789"));
-                if (!*(char *)g_pp) break;
-                vals[wi] = (int)strtol((char *)g_pp, &ep, 10);
-                g_pp = (volatile char *)ep;
+                t += strcspn(t, "0123456789");
+                if (!*t) break;
+                vals[wi] = (int)strtol(t, &t, 10);
                 wi++;
             }
-            /* end ALARM Pass2 */
 
             /* Map by kmap */
             h_val = -1; m_val = -1; s_val = -1;
@@ -2114,6 +2108,7 @@ void ProcessCommand(char *cmd)
     }
     #undef MATCH_CMD
 }
+#pragma pop
 
 
 static void Report_Display(void)

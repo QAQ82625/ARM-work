@@ -604,6 +604,115 @@ ARM Compiler 5 V5.06在C89模式下运行时，对包含多个大分支的函数
 \end{figure}
 
 %% ================================================================
+\section{开发反思与经验总结}
+
+\subsection{UART通信不稳定与ARMCC5编译器适配（耗时最长的问题）}
+
+这是整个项目中耗时最长、最难定位的问题。现象表现为：执行自动化测试时，MCU偶尔卡死（无任何响应）或SET命令解析出的数值出现截断（如14→4, 30→0）。问题概率性出现，且随着代码修改位置变化而转移。
+
+\subsubsection{问题表现}
+
+\begin{enumerate}
+    \item \textbf{卡死}: 执行*RST紧接*SET:TIME后，MCU完全无响应，PING无应答
+    \item \textbf{截断}: *SET:TIME HOUR 14 MIN 30 SEC 00 → *GET:TIME返回04.00.00（HOUR=4而非14）
+    \item \textbf{概率性}: 有时连续10次测试正常，有时第2次即触发，难以复现
+    \item \textbf{转移性}: 添加debug标记后问题位置改变（卡死→截断），删除标记后截断仍存
+\end{enumerate}
+
+\subsubsection{诊断过程}
+
+\begin{enumerate}
+    \item \textbf{初始怀疑——指针while循环}: 原始代码使用while(*t)和while(*msg)等裸指针循环。ARMCC5 C89模式下，编译器将*t的值缓存在寄存器中，循环体内t++的更新未写回寄存器→死循环。修复：改为for+strlen计数循环。
+
+    \item \textbf{添加debug标记}: 为精确定位卡死位置，在ProcessCommand每个阶段设置g\_dbg标记(0x01-0xF1)。通过Keil调试器暂停后查看g\_dbg值定位卡死点。
+
+    \item \textbf{发现截断问题}: debug标记添加后卡死消失，但出现新的数据截断问题。通过*DBG诊断行上报kmap和vals[]值，发现kmap=7(关键词全部正确识别)但vals[1]=-1或vals[0]被截断——即Pass1正确、Pass2错误。
+
+    \item \textbf{排除debug标记干扰}: 逐一删除ProcessCommand内、ExtractLine内、PutStrNB内的所有volatile debug标记。截断随标记删除而改善但仍有概率出现。
+
+    \item \textbf{尝试volatile破解}: 使用文件域volatile char *g\_pp替代局部char *t，强制ARMCC5每次从内存重读指针。截断位置从vals[1]转移到vals[0]——确认是寄存器分配问题。
+
+    \item \textbf{禁用优化}: 使用\#pragma O0禁用ProcessCommand优化。ARMCC5对per-function pragma支持有限，改为文件级\#pragma O0。截断大幅减少但未完全消除。
+
+    \item \textbf{根因定位——strtol缺陷}: \#pragma O0已生效但依然截断→根因不是优化，而是ARMCC5 C89运行时库的strtol(t, \&t, 10)在特定条件下写回*endptr的地址偏移错误。改用自写内联while(*p>='0')\{v=v*10+(*p++-'0')\} → \textbf{彻底消除截断}。
+
+\end{enumerate}
+
+\subsubsection{最终解决方案}
+
+\begin{itemize}
+    \item \textbf{文件级禁用优化}: \#pragma O0覆盖所有函数，保证基础正确性
+    \item \textbf{内联数字解析}: 所有数字提取改为自写循环，零次strtol调用
+    \item \textbf{cmd\_line栈拷贝}: ProcessCommand前将全局buffer拷贝到栈变量，隔离ISR写入干扰
+    \item \textbf{volatile关键变量}: remote\_beep\_active/end\_ms等运行时异步修改变量加volatile
+\end{itemize}
+
+\subsection{蜂鸣器稳定性问题}
+
+\subsubsection{从PN1到PK5的迁移}
+
+最初使用PN1引脚通过Timer0A ISR软件翻转2kHz波形。烧录后发现蜂鸣器完全不响。检查硬件原理图后确认S800板的蜂鸣器实际连接在PK5引脚，驱动方式应为M0PWM7/PWM0 Gen3 Out7硬件PWM。
+
+\subsubsection{闹钟响铃高低不稳}
+
+迁移到PK5 PWM后，蜂鸣器能响但声音明显一高一低。根因：PWMGenDisable停止计数器后，PWM计数器可能停在HIGH相位→引脚锁在高电平→连续尖锐鸣叫。修复过程：
+
+\begin{enumerate}
+    \item 尝试Beep\_Off后GPIO强制拉低PK5 → 部分有效
+    \item 尝试Beep\_Off先PWMOutputState(false)再GenDisable → 改善但仍有偶发
+    \item 最终方案——\textbf{持久静音watchdog}: beep\_force\_off标志位，超时后每100ms循环执行Beep\_Off()，直到下次Beep\_On()清零
+\end{enumerate}
+
+\subsubsection{*RST打断静音}
+
+testcmd.txt中*SET:BEEP 1000紧跟*RST。BEEP超时后beep\_force\_off=1启动持久静音，但*RST中beep\_force\_off=0把watchdog杀了。修复：*RST改为Beep\_Off()+beep\_force\_off=1，不取消watchdog。
+
+\subsubsection{闹钟不跟随BEEP同时Fix}
+
+闹钟响铃需要快速切换（300ms响/300ms停），BEEP需要彻底关断。两条需求矛盾——GenEnable/Disable有延时保证静音但不适合快速切换，PWMOutputState零延迟但不保证彻底关断。最终采用\textbf{双路径方案}：
+
+\begin{itemize}
+    \item \textbf{闹钟}: Beep\_On启动PWM → 相位循环中Beep\_OutOn/OutOff用OutputState快速切换 → Alarm\_Stop用Beep\_Off彻底关断
+    \item \textbf{BEEP}: Beep\_On → 等Nms → Beep\_Off + 持久静音watchdog
+\end{itemize}
+
+\subsection{按键扫描演进}
+
+\subsubsection{SPEED/FORMAT滚动中途误退出}
+
+按键释放时Key\_Scan推送KEV\_UP事件。SCROLL状态下SPEED/FORMAT的KEV\_DOWN正确处理，但其后的KEV\_UP不匹配SPEED/FORMAT的KEV\_DOWN条件→落入else"任意键退出"分支→滚动被意外终止。修复：整个SCROLL分支用ke==KEV\_DOWN包裹。
+
+\subsubsection{统一状态机重构}
+
+原始代码中I2C按键(8键)和GPIO按键(USER1/USER2)使用两套独立的处理逻辑——I2C走状态机、GPIO裸边沿检测。这导致USER1/USER2无消抖保护、无长按支持。重构为：all\_raw=uint16\_t(I2C8位+GPIO2位)→统一KS\_IDLE→KS\_DEBOUNCE\_DOWN(20ms)→KS\_PRESSED→KS\_LONG\_PRESSED(800ms)→KS\_DEBOUNCE\_UP(20ms释放消抖)→KS\_IDLE。
+
+\subsubsection{KEV\_UP消抖释放}
+
+新增KS\_DEBOUNCE\_UP状态：释放后等待20ms确认无新按键→推送KEV\_UP→回KS\_IDLE。中途再按则转回KS\_PRESSED。过滤I2C总线毛刺导致的"假释放"。
+
+\subsection{命令解析架构演进}
+
+\subsubsection{从match\_abbrev到cmd\_match}
+
+原始方案使用match\_abbrev函数实现缩写匹配（大写必输、小写可选），通过混合大小写模式(MINute, SECond)标记哪些字母可省略。但这个设计中，全大写模式(MONTH)禁止缩写，而MINute要求至少输MIN。测试中出现非法缩写(MONT, MI)通过的问题。改为cmd\_match前缀匹配：MONT vs MONTH→M-O-N-T匹配后input耗尽但prefix='H'≠0→失败。MI vs MIN→M-I匹配后input耗尽但prefix='N'≠0→失败。
+
+\subsubsection{从单Pass到2-Pass}
+
+ExtractLine去空格后*SET:TIME HOUR MIN SEC 14 30 00→HOURMINSEC143000。单pass cmd\_match+has\_digit的分支设计无法处理全关键词在前、值全在末尾的格式。改用2-Pass：Pass1用副本指针q扫关键词→建kmap，Pass2用原指针p扫所有数字→vals[]，Map阶段按kmap顺序分配。
+
+\subsection{其它修复记录}
+
+\begin{itemize}
+    \item \textbf{PC端1Hz自动PING+3s超时}: 通过QTimer 1000ms发*PING，超过3s无*PONG→状态灰变+自动重试
+    \item \textbf{LED位映射修正}: LED3=UART TX+RX合并(0x08), LED4=SUN(0x10), LED5=RAI/SNO(0x20), LED6=高温(0x40), LED7=NTP(0x80)
+    \item \textbf{编辑备份恢复}: 进入编辑时memcpy备份→FUNC短按模式切换保留编辑→SAVE/FUNC长按提交→退出时仅恢复未保存的值
+    \item \textbf{MSG前导空格}: skip\_kw\_rest后p指向" Hello"→while(*p==' ')p++跳过空格
+    \item \textbf{PC闹钟管理崩溃}: \_update\_alarm\_ui引用不存在的btn\_alarm\_toggle→改为no-op; 每行新增设置/清除按钮
+    \item \textbf{闹钟DOW slot解析}: ALARM handler 2-pass之前加dow\_to\_slot()检测MON-SUN，匹配到则覆盖ss/se，无DOW默认当天
+    \item \textbf{参数组合演示}: PC日期时间页QComboBox 4种组合(YEAR MONTH DATE等)+缩写演示按钮发送cmd\_match可接受的简称
+\end{itemize}
+
+%% ================================================================
 \section{总结与展望}
 
 \subsection{项目成果}
@@ -613,16 +722,16 @@ ARM Compiler 5 V5.06在C89模式下运行时，对包含多个大分支的函数
     \item MCU端：独立运行的本地时钟（含闰年）、闹钟（节奏响铃+天气联动）、流水显示（双向双速）、编辑状态机（备份恢复）、按键扫描（统一状态机消抖）、LED指示（8位精确映射）、15条UART命令+8类事件解析
     \item PC端：7标签页控制面板、数字孪生镜像面板（1:1同步）、4项扩展功能、贪吃蛇游戏
     \item 协议：100条自动化测试通过，TIMEOUT=0
-    \item 编译器：成功适配ARMCC5 C89优化缺陷，#pragma O0 + 内联解析双保险
+    \item 编译器：成功适配ARMCC5 C89优化缺陷，\#pragma O0 + 内联解析双保险
 \end{itemize}
 
-\subsection{技术难点与收获}
+\subsection{技术难点与核心收获}
 
 \begin{enumerate}
-    \item \textbf{ARMCC5优化缺陷诊断与修复}：通过volatile标记、栈拷贝隔离、二分定位、最终内联解析等多次迭代，深入理解了C89编译器寄存器分配的底层行为
-    \item \textbf{I2C总线竞态}：SysTick ISR与前台代码共享I2C总线 → SysTickIntDisable+while(I2CMasterBusy())等待in-flight事务
-    \item \textbf{蜂鸣器稳定性}：PWM计数器随机停在高电平→先在OutputState(false)再GenDisable + beep\_force\_off持久静音watchdog
-    \item \textbf{按键扫描}：统一状态机 + KS\_DEBOUNCE\_UP消抖释放 → 根除KEV\_UP误触发导致的滚动退出
+    \item \textbf{ARMCC5优化缺陷诊断}: 通过debug标记二分定位、volatile强制重载、栈拷贝隔离、\#pragma O0等多轮迭代，最终定位到strtol(\&t)内部缺陷并通过内联解析根除。深入理解了C89编译器寄存器分配的底层机制
+    \item \textbf{I2C总线竞态}: SysTick ISR与前台代码共享I2C → SysTickIntDisable+while(I2CMasterBusy())等待in-flight事务
+    \item \textbf{蜂鸣器稳定性}: PWM计数器随机停在高电平 → 先OutputState(false)再GenDisable + beep\_force\_off持久静音 + 闹钟/BEEP双路径驱动
+    \item \textbf{按键扫描}: 统一状态机 + KS\_DEBOUNCE\_UP消抖释放 → 根除KEV\_UP误触发导致的各种异常
 \end{enumerate}
 
 \subsection{改进方向}

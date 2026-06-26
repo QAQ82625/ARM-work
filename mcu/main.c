@@ -1534,52 +1534,55 @@ void ProcessCommand(char *cmd)
     if (strncmp(cmd, "*SET:", 5) == 0) {
         p = cmd + 5;
 
-        /* *SET:DATE */
+        /* *SET:DATE - 2-pass: Pass1 keywords→kmap, Pass2 vals[], Map by kmap */
         if (cmd_match(p, "DATE")) {
-            uint8_t has_digit, dig_cnt;
-            int v;
+            int yr, mo, dy;
+            int kmap;
+            int vals[3];
+            int vi, wi;
             uint8_t max_d;
+            char *q;
+
             p += 4;
             skip_kw_rest(&p, "");
-            while (*p) {
-                if (cmd_match(p, "YEAR")) {
-                    p += 4;
-                    skip_kw_rest(&p, "");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 4) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        if (v >= 2025 && v <= 2099) g_date.y = (uint16_t)v;
-                        else { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    }
-                } else if (cmd_match(p, "MONTH")) {
-                    p += 5;
-                    skip_kw_rest(&p, "");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        if (v < 1 || v > 12) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                        g_date.m = (uint8_t)v;
-                    }
-                } else if (cmd_match(p, "DATE")) {
-                    p += 4;
-                    skip_kw_rest(&p, "");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        max_d = days_in_month[g_date.m - 1];
-                        if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
-                        if (v < 1 || v > max_d) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                        g_date.d = (uint8_t)v;
-                    }
-                } else {
-                    if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z'))
-                        { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
-                    break;
-                }
+
+            /* Pass 1: scan keywords on copy → kmap */
+            kmap = 0;
+            q = p;
+            while (*q) {
+                if (cmd_match(q, "YEAR"))       { kmap |= 1; q += 4; skip_kw_rest(&q, ""); }
+                else if (cmd_match(q, "MONTH")) { kmap |= 2; q += 5; skip_kw_rest(&q, ""); }
+                else if (cmd_match(q, "DATE"))  { kmap |= 4; q += 4; skip_kw_rest(&q, ""); }
+                else break;
             }
+
+            /* Pass 2: extract integers (inline, no strtol) */
+            wi = 0;
+            while (*p && wi < 3) {
+                if (*p >= '0' && *p <= '9') {
+                    int v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
+                    vals[wi++] = v;
+                } else { p++; }
+            }
+            if (wi == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+
+            /* Map by kmap */
+            yr = -1; mo = -1; dy = -1;
+            vi = 0;
+            if (kmap & 1) yr = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 2) mo = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 4) dy = (vi < wi) ? vals[vi++] : -1;
+            while (vi < wi) { if (yr < 0) yr = vals[vi]; else if (mo < 0) mo = vals[vi]; else if (dy < 0) dy = vals[vi]; vi++; }
+
+            /* Apply */
+            if (yr < 0) yr = (int)g_date.y;
+            if (yr < 2025 || yr > 2099) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+            g_date.y = (uint16_t)yr;
+            if (mo >= 0) g_date.m = (uint8_t)mo;
+            if (dy >= 0) g_date.d = (uint8_t)dy;
+            max_d = days_in_month[g_date.m - 1];
+            if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
+            if (g_date.d > max_d) g_date.d = max_d;
             {
                 uint32_t val;
                 val = g_date.y * 10000 + g_date.m * 100 + g_date.d;
@@ -1590,53 +1593,55 @@ void ProcessCommand(char *cmd)
             return;
         }
 
-        /* *SET:TIME */
+        /* *SET:TIME - 2-pass: Pass1 keywords→kmap, Pass2 vals[], Map by kmap */
         if (cmd_match(p, "TIME")) {
-            uint8_t has_digit, dig_cnt;
-            int v;
+            int h, m, s;
+            int kmap;
+            int vals[3];
+            int vi, wi;
+            char *q;
+
             p += 4;
             skip_kw_rest(&p, "");
-            while (*p) {
-                if (cmd_match(p, "HOUR")) {
-                    p += 4;
-                    skip_kw_rest(&p, "");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        if (v > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                        g_time.h = (uint8_t)v;
-                    }
-                } else if (cmd_match(p, "MIN")) {
-                    p += 3;
-                    skip_kw_rest(&p, "UTE");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                        g_time.mi = (uint8_t)v;
-                    }
-                } else if (cmd_match(p, "SEC")) {
-                    p += 3;
-                    skip_kw_rest(&p, "OND");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                        g_time.s = (uint8_t)v;
-                    }
-                } else {
-                    if (cmd_match(p, "OFF")) {
-                        disp_on = 0;
-                        UART_PutStrNB("OK\r\n"); return;
-                    }
-                    if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z'))
-                        { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
-                    break;
-                }
+
+            /* OFF check (before 2-pass, keyword-only subcommand) */
+            q = p;
+            if (cmd_match(q, "OFF")) {
+                disp_on = 0;
+                UART_PutStrNB("OK\r\n"); return;
             }
+
+            /* Pass 1: scan keywords → kmap */
+            kmap = 0;
+            q = p;
+            while (*q) {
+                if (cmd_match(q, "HOUR"))       { kmap |= 1; q += 4; skip_kw_rest(&q, ""); }
+                else if (cmd_match(q, "MIN"))   { kmap |= 2; q += 3; skip_kw_rest(&q, "UTE"); }
+                else if (cmd_match(q, "SEC"))   { kmap |= 4; q += 3; skip_kw_rest(&q, "OND"); }
+                else break;
+            }
+
+            /* Pass 2: extract integers (inline, no strtol) */
+            wi = 0;
+            while (*p && wi < 3) {
+                if (*p >= '0' && *p <= '9') {
+                    int v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
+                    vals[wi++] = v;
+                } else { p++; }
+            }
+
+            /* Map by kmap */
+            h = -1; m = -1; s = -1;
+            vi = 0;
+            if (kmap & 1) h = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 2) m = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 4) s = (vi < wi) ? vals[vi++] : -1;
+            while (vi < wi) { if (h < 0) h = vals[vi]; else if (m < 0) m = vals[vi]; else if (s < 0) s = vals[vi]; vi++; }
+
+            /* Apply */
+            if (h >= 0) { if (h > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.h = (uint8_t)h; }
+            if (m >= 0) { if (m > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.mi = (uint8_t)m; if (s < 0) g_time.s = 0; }
+            if (s >= 0) { if (s > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; } g_time.s = (uint8_t)s; }
             {
                 uint32_t val;
                 val = g_time.h * 10000 + g_time.mi * 100 + g_time.s;
@@ -1647,11 +1652,14 @@ void ProcessCommand(char *cmd)
             return;
         }
 
-        /* *SET:ALARM */
+        /* *SET:ALARM - 2-pass: Pass1 keywords→kmap, Pass2 vals[], Map by kmap */
         if (cmd_match(p, "ALARM")) {
-            uint8_t has_digit, dig_cnt;
-            int v;
+            int h, m, s;
+            int kmap;
+            int vals[3];
+            int vi, wi;
             int si, ss, se;
+            char *q;
 
             p += 5;
             skip_kw_rest(&p, "");
@@ -1659,64 +1667,54 @@ void ProcessCommand(char *cmd)
             ss = (int)ALARM_IDX;
             se = ss + 1;
 
-            if (cmd_match(p, "OFF")) {
+            /* ON/OFF check (before 2-pass) */
+            q = p;
+            if (cmd_match(q, "ON")) {
+                for (si = ss; si < se; si++)
+                    g_alarm_slot_enabled_mask |= (1U << si);
+                UART_PutStrNB("OK\r\n"); return;
+            }
+            if (cmd_match(q, "OFF")) {
                 for (si = ss; si < se; si++)
                     g_alarm_slot_enabled_mask &= ~(1U << si);
                 g_alarm_beep_active = 0;
                 UART_PutStrNB("OK\r\n"); return;
             }
-            if (cmd_match(p, "ON")) {
-                for (si = ss; si < se; si++)
-                    g_alarm_slot_enabled_mask |= (1U << si);
-                UART_PutStrNB("OK\r\n"); return;
+
+            /* Pass 1: scan keywords → kmap */
+            kmap = 0;
+            q = p;
+            while (*q) {
+                if (cmd_match(q, "HOUR"))       { kmap |= 1; q += 4; skip_kw_rest(&q, ""); }
+                else if (cmd_match(q, "MIN"))   { kmap |= 2; q += 3; skip_kw_rest(&q, "UTE"); }
+                else if (cmd_match(q, "SEC"))   { kmap |= 4; q += 3; skip_kw_rest(&q, "OND"); }
+                else break;
             }
 
-            while (*p) {
-                if (cmd_match(p, "HOUR")) {
-                    p += 4;
-                    skip_kw_rest(&p, "");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        if (v > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                        for (si = ss; si < se; si++) {
-                            g_alarm_slot[si].h = (uint8_t)v;
-                            g_alarm_slot_enabled_mask |= (1U << si);
-                        }
-                    }
-                } else if (cmd_match(p, "MIN")) {
-                    p += 3;
-                    skip_kw_rest(&p, "UTE");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                        for (si = ss; si < se; si++) {
-                            g_alarm_slot[si].mi = (uint8_t)v;
-                            g_alarm_slot_enabled_mask |= (1U << si);
-                        }
-                    }
-                } else if (cmd_match(p, "SEC")) {
-                    p += 3;
-                    skip_kw_rest(&p, "OND");
-                    has_digit = (*p >= '0' && *p <= '9');
-                    if (has_digit) {
-                        v = 0; dig_cnt = 0;
-                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
-                        if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                        for (si = ss; si < se; si++) {
-                            g_alarm_slot[si].s = (uint8_t)v;
-                            g_alarm_slot_enabled_mask |= (1U << si);
-                        }
-                    }
-                } else {
-                    if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z'))
-                        { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
-                    break;
-                }
+            /* Pass 2: extract integers (inline, no strtol) */
+            wi = 0;
+            while (*p && wi < 3) {
+                if (*p >= '0' && *p <= '9') {
+                    int v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
+                    vals[wi++] = v;
+                } else { p++; }
             }
+
+            /* Map by kmap */
+            h = -1; m = -1; s = -1;
+            vi = 0;
+            if (kmap & 1) h = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 2) m = (vi < wi) ? vals[vi++] : -1;
+            if (kmap & 4) s = (vi < wi) ? vals[vi++] : -1;
+            while (vi < wi) { if (h < 0) h = vals[vi]; else if (m < 0) m = vals[vi]; else if (s < 0) s = vals[vi]; vi++; }
+
+            /* Apply */
+            if (h >= 0) { if (h > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                for (si = ss; si < se; si++) { g_alarm_slot[si].h = (uint8_t)h; g_alarm_slot_enabled_mask |= (1U << si); } }
+            if (m >= 0) { if (m > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                for (si = ss; si < se; si++) { g_alarm_slot[si].mi = (uint8_t)m; g_alarm_slot_enabled_mask |= (1U << si); } }
+            if (s >= 0) { if (s > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                for (si = ss; si < se; si++) { g_alarm_slot[si].s = (uint8_t)s; g_alarm_slot_enabled_mask |= (1U << si); } }
             UART_PutStrNB("OK\r\n");
             return;
         }

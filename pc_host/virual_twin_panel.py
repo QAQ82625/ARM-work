@@ -1183,12 +1183,12 @@ class VirtualTwinPanel(QMainWindow):
         fmt = self.combo_date_fmt.currentText()
         # 构造缩写命令: 仅大写字母必输
         abbrev_map = {
-            "YEAR MONTH DATE": f"*SET:DATE y {y} mon {m} d {d}",
-            "YEAR DATE":       f"*SET:DATE y {y} d {d}",
-            "MONTH DATE":      f"*SET:DATE mon {m} d {d}",
-            "YEAR MONTH":      f"*SET:DATE y {y} mon {m}",
+            "YEAR MONTH DATE": f"*SET:DATE YE {y} MO {m} DA {d}",
+            "YEAR DATE":       f"*SET:DATE YE {y} DA {d}",
+            "MONTH DATE":      f"*SET:DATE MO {m} DA {d}",
+            "YEAR MONTH":      f"*SET:DATE YE {y} MO {m}",
         }
-        cmd = abbrev_map.get(fmt, f"*SET:DATE Y {y} MON {m} D {d}")
+        cmd = abbrev_map.get(fmt, f"*SET:DATE YE {y} MO {m} DA {d}")
         self.log(f"缩写演示 [{fmt}]: {cmd}", "event")
         self.send_cmd(cmd)
 

@@ -1520,11 +1520,11 @@ void ProcessCommand(char *cmd)
                 memcpy(tok2, p, (size_t)word_len);
                 tok2[word_len] = '\0';
                 p += word_len;
-                if (match_abbrev(tok2, "DATE") || match_abbrev(tok2, "YEAR") || match_abbrev(tok2, "MONTH"))
+                if (match_abbrev(tok2, "DAte") || match_abbrev(tok2, "YEar") || match_abbrev(tok2, "MOnth"))
                     { g_date.y = 2026; g_date.m = 6; g_date.d = 8; }
-                else if (match_abbrev(tok2, "TIME"))
+                else if (match_abbrev(tok2, "TIme"))
                     { g_time.h = 0; g_time.mi = 0; g_time.s = 0; }
-                else if (match_abbrev(tok2, "ALARM")) {
+                else if (match_abbrev(tok2, "ALarm")) {
                     uint8_t ai;
                     for (ai = 0; ai < ALARM_SLOTS; ai++) {
                         g_alarm_slot[ai].h = 6;
@@ -1574,9 +1574,9 @@ void ProcessCommand(char *cmd)
                     memcpy(wbuf, t, (size_t)wlen);
                     wbuf[wlen] = '\0';
                     t += wlen;
-                    if (match_abbrev(wbuf, "YEAR"))       kmap |= 1;
-                    else if (match_abbrev(wbuf, "MONTH"))  kmap |= 2;
-                    else if (match_abbrev(wbuf, "DATE"))   kmap |= 4;
+                    if (match_abbrev(wbuf, "YEar"))       kmap |= 1;
+                    else if (match_abbrev(wbuf, "MOnth"))  kmap |= 2;
+                    else if (match_abbrev(wbuf, "DAte"))   kmap |= 4;
                     else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
                 }
             }
@@ -1662,7 +1662,7 @@ void ProcessCommand(char *cmd)
                     memcpy(wbuf, t, (size_t)wlen);
                     wbuf[wlen] = '\0';
                     t += wlen;
-                    if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
+                    if (match_abbrev(wbuf, "HOUr"))        kmap |= 1;
                     else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
                     else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
                     else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
@@ -1763,7 +1763,7 @@ void ProcessCommand(char *cmd)
                     memcpy(wbuf, t, (size_t)wlen);
                     wbuf[wlen] = '\0';
                     t += wlen;
-                    if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
+                    if (match_abbrev(wbuf, "HOUr"))        kmap |= 1;
                     else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
                     else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
                     else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
@@ -1952,12 +1952,12 @@ void ProcessCommand(char *cmd)
             g_weather_temp = (int8_t)t;
             p = skip_to_next(p);
             p += strspn(p, " ");
-            if (match_abbrev(p, "SUN"))      strcpy(g_weather_cond, "SUN");
-            else if (match_abbrev(p, "CLD")) strcpy(g_weather_cond, "CLD");
-            else if (match_abbrev(p, "OVC")) strcpy(g_weather_cond, "OVC");
-            else if (match_abbrev(p, "RAI")) strcpy(g_weather_cond, "RAI");
-            else if (match_abbrev(p, "SNO")) strcpy(g_weather_cond, "SNO");
-            else if (match_abbrev(p, "FOG")) strcpy(g_weather_cond, "FOG");
+            if (match_abbrev(p, "SUn"))      strcpy(g_weather_cond, "SUN");
+            else if (match_abbrev(p, "CLd")) strcpy(g_weather_cond, "CLD");
+            else if (match_abbrev(p, "OVc")) strcpy(g_weather_cond, "OVC");
+            else if (match_abbrev(p, "RAi")) strcpy(g_weather_cond, "RAI");
+            else if (match_abbrev(p, "SNo")) strcpy(g_weather_cond, "SNO");
+            else if (match_abbrev(p, "FOg")) strcpy(g_weather_cond, "FOG");
             else { strcpy(g_weather_cond, "UNK"); }
             g_weather_valid = 1;
             g_weather_age = 0;
@@ -2011,7 +2011,7 @@ void ProcessCommand(char *cmd)
     if (strncmp(cmd, "*GET:", 5) == 0) {
         p = cmd + 5;
         p += strspn(p, " ");
-        if (*p == '\0' || match_abbrev(p, "TIME")) {
+        if (*p == '\0' || match_abbrev(p, "TIme")) {
             char resp[48];
             if (g_format == FMT_RIGHT) {
                 uint8_t rh = (g_time.h % 10) * 10 + (g_time.h / 10);
@@ -2024,7 +2024,7 @@ void ProcessCommand(char *cmd)
             UART_PutStrNB(resp);
             return;
         }
-        if (match_abbrev(p, "DATE")) {
+        if (match_abbrev(p, "DAte")) {
             char resp[48];
             if (g_format == FMT_RIGHT) {
                 uint8_t rd = (g_date.d % 10) * 10 + (g_date.d / 10);
@@ -2038,11 +2038,11 @@ void ProcessCommand(char *cmd)
             UART_PutStrNB(resp);
             return;
         }
-        if (match_abbrev(p, "FORMAT")) {
+        if (match_abbrev(p, "FORmat")) {
             UART_PutStrNB(g_format == FMT_LEFT ? "OK LEFT\r\n" : "OK RIGHT\r\n");
             return;
         }
-        if (match_abbrev(p, "ALARM")) {
+        if (match_abbrev(p, "ALarm")) {
             char resp[160]; int off = 0;
             int si;
             off = sprintf(resp, "OK");
@@ -2056,15 +2056,15 @@ void ProcessCommand(char *cmd)
             UART_PutStrNB(resp);
             return;
         }
-        if (match_abbrev(p, "DISP")) {
+        if (match_abbrev(p, "DISp")) {
             UART_PutStrNB(disp_on ? "OK ON\r\n" : "OK OFF\r\n");
             return;
         }
-        if (match_abbrev(p, "MODE")) {
+        if (match_abbrev(p, "MOde")) {
             UART_PutStrNB(g_night_mode ? "OK NIGHT\r\n" : "OK DAY\r\n");
             return;
         }
-        if (match_abbrev(p, "SPEED")) {
+        if (match_abbrev(p, "SPeed")) {
             UART_PutStrNB(g_scroll_speed_level ? "OK FAST\r\n" : "OK SLOW\r\n");
             return;
         }

@@ -1658,6 +1658,14 @@ void ProcessCommand(char *cmd)
             max_d = days_in_month[g_date.m - 1];
             if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
             if (g_date.d > max_d) g_date.d = max_d;
+            {
+                char dbg_line[48];
+                uint8_t last_dbg = g_dbg;
+                uint16_t offset = g_dbg_len;
+                sprintf(dbg_line, "*DBG D off=%u dbg=%02X\r\n",
+                        (unsigned int)offset, (unsigned int)last_dbg);
+                UART_PutStrNB(dbg_line);
+            }
             g_dbg = 0x34;
             UART_PutStrNB("OK\r\n");
             g_dbg = 0x35;
@@ -1753,6 +1761,14 @@ void ProcessCommand(char *cmd)
             if (s_val >= 0) {
                 if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
                 g_time.s = (uint8_t)s_val;
+            }
+            {
+                char dbg_line[48];
+                uint8_t last_dbg = g_dbg;
+                uint16_t offset = g_dbg_len;
+                sprintf(dbg_line, "*DBG T off=%u dbg=%02X\r\n",
+                        (unsigned int)offset, (unsigned int)last_dbg);
+                UART_PutStrNB(dbg_line);
             }
             g_dbg = 0x44;
             UART_PutStrNB("OK\r\n");

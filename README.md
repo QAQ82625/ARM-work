@@ -1,6 +1,6 @@
 # 智能联网时钟系统 — HW26-0672
 
-学生版大作业 V1.2 | 学号 20260001 | 姓名 HU ZHENYE
+学生版大作业 V1.3 | 学号 20260001 | 姓名 HU ZHENYE
 
 ---
 
@@ -10,14 +10,17 @@
 hw26-0672/
 ├── README.md                    ← 本文件
 ├── CLAUDE.md                    ← 开发辅助文档
+├── SPEC_COMPLIANCE_CHECKLIST.md ← 规格对照清单
 ├── mcu/
-│   ├── main.c                   ← **全部自编代码集中于此**
+│   ├── main.c                   ← **全部自编代码集中于此** (~2400行)
 │   ├── src/                     ← 课程提供模块
 │   ├── driverlib/               ← 驱动库
 │   ├── Objects/S800.axf         ← 编译输出（可烧写）
 │   └── RTE/                     ← 启动文件
 └── pc_host/
     ├── virual_twin_panel.py     ← PC上位机（PyQt5 数字孪生面板）
+    ├── test_runner.py           ← 串口协议自动测试+评分器
+    ├── testcmd.txt              ← 测试命令集(100条)
     ├── snake_game.py            ← 贪吃蛇游戏 (MCU按键操控+PC渲染)
     ├── ntp_helper.py            ← NTP 对时模块
     ├── weather_helper.py        ← 天气获取模块
@@ -32,8 +35,9 @@ hw26-0672/
 ### S800 板端（MCU）
 
 1. Keil MDK 打开 `mcu/S800.uvprojx`
-2. 编译 → 烧写到 S800 开发板（TM4C1294NCPDT）
-3. 烧写后自动运行，无需连接 PC
+2. Project → Rebuild all target files
+3. F8 烧写到 S800 开发板（TM4C1294NCPDT）
+4. 烧写后自动运行，无需连接 PC
 
 ### PC 端
 
@@ -42,6 +46,12 @@ cd pc_host
 .venv\Scripts\activate
 pip install -r requirements.txt
 python virual_twin_panel.py
+```
+
+### 自动化测试
+
+```bash
+python test_runner.py --student-id 20260001 --port COM9
 ```
 
 ---
@@ -71,43 +81,43 @@ python virual_twin_panel.py
 
 ### §3.4 闹钟 ✅
 
-- 时分秒匹配触发 → 蜂鸣器 2kHz PWM 节奏响铃
-- 响200ms→停200ms→响200ms→停200ms 循环，≤10秒自停
+- PK5 M0PWM7 PWM硬件驱动 2kHz/50%占空比
+- 300ms 响 / 300ms 停 节奏式响铃，≤10秒自停
 - FUNC键立即停止
+- 天气联动: 雨雪多响3声，高温 8LED 慢闪
 - LED1：使能=常亮 / 响铃=快闪
-- `*SET:ALARM [slot] HOUR/MIN/SEC/OFF/ON` 远程设定
-- **多闹钟调度器**：7槽位（周一~周日）每天独立时间+使能
-- `*SET:ALARM MON HOUR 8 MIN 30 SEC 0` 设置周一，`ALL` 全部
-- `*GET:ALARM` 返回7槽完整数据
-- EXT键 切换当前日闹钟使能/禁用
+- *SET:ALARM [MON-SUN] HOUR/MIN/SEC 设置指定星期
+- *SET:ALARM ON/OFF 使能/禁用当天
+- *GET:ALARM 返回7槽完整数据
+- 无DOW参数默认当天，PC每行独立设置+单日清除按钮
 
 ### §3.5 编辑状态机 ✅
 
-- FUNC 循环: EDIT_DATE → EDIT_TIME → EDIT_ALARM → EDIT_DATE（环形，不自动退出）
+- FUNC 循环: EDIT_DATE → EDIT_TIME → EDIT_ALARM → EDIT_DATE（环形, 不自动退出）
 - SHIFT 切换字段（长日期年份闪烁4位，短日期闪烁2位）
 - ADD 当前字段+1（带范围钳制）
 - SAVE / 长按FUNC(≥1s) 保存退出
 - 退出方式：仅 SAVE 或 FUNC长按（无超时自动退出）
-- **编辑备份/恢复**：进入编辑时备份当前值，FUNC模式切换保留编辑内容，仅退出时恢复备份
+- 编辑备份/恢复: 进入时备份，退出时恢复
 
 ### §3.6 LED 指示 ✅
 
 | 位 | 名称 | 含义 | 行为 |
 |----|------|------|------|
-| LED0 (bit0) | ❤️ 心跳 | 系统运行 | 1Hz闪（500ms/500ms） |
-| LED1 (bit1) | ⏰ 闹钟 | 使能+响铃 | 使能常亮 / 响铃200ms快闪 |
-| LED2 (bit2) | ✏️ 编辑 | 编辑模式 | 编辑中常亮 |
-| LED3 (bit3) | 📤 TX | UART发送 | 发送后亮300ms |
-| LED4 (bit4) | 📥 RX/🕐 NTP | 接收/NTP同步 | RX=亮300ms / NTP=常亮 |
-| LED5 (bit5) | ☀️ 晴天 | 天气SUN | 晴天常亮 |
-| LED6 (bit6) | 🌧️ 雨雪 | 天气RAI/SNO | 雨雪时常亮 |
-| LED7 (bit7) | 🔥 高温 | ≥30°C | 高温常亮 |
+| LED0 (0x01) | ❤️ 心跳 | 系统运行 | 1Hz闪 |
+| LED1 (0x02) | ⏰ 闹钟 | 使能+响铃 | 使能常亮 / 响铃快闪 |
+| LED2 (0x04) | ✏️ 编辑 | 编辑模式 | 编辑中常亮 |
+| LED3 (0x08) | 📤📥 UART | TX+RX合并 | 活动后亮100ms |
+| LED4 (0x10) | ☀️ 晴天 | 天气SUN | 晴天常亮 |
+| LED5 (0x20) | 🌧️ 雨雪 | RAI/SNO | 1Hz呼吸 |
+| LED6 (0x40) | 🔥 高温 | ≥30°C | 高温常亮 |
+| LED7 (0x80) | 🕐 NTP | 同步状态 | SYNCED=常亮/DRIFT=1Hz闪/UNSYNCED=灭 |
 
-> **接管模式**：`*SET:LED <hex>` 直接控制8位LED，`*SET:LED 00` 或 `*RST` 退出接管恢复自动逻辑。
+> 接管模式: `*SET:LED <hex>` 直接控制，00 或 *RST 退出，10s 超时自动退出。
 
 ### §3.7 按键映射 ✅
 
-消抖 20ms，长按 ≥1s，I2C 极性反转修复。按键响应稳定无丢键。
+消抖 20ms，长按 ≥800ms。USER1/USER2 统一状态机消抖+长按。
 
 | 按键 | 位置 | 短按 | 长按 |
 |------|------|------|------|
@@ -119,19 +129,56 @@ python virual_twin_panel.py
 | FORMAT | K5 | 方向切换 LEFT/RIGHT | — |
 | DISP | K6 | 时间/短日期/长日期切换 | — |
 | EXT | K7 | 闹钟使能/禁用切换 | — |
-| USER1 | PJ0 | 请求PC NTP对时 | — |
+| USER1 | PJ0 | 请求PC NTP对时 | NTP状态查询(n.SY.xx) |
 | USER2 | PJ1 | 5秒显示天气+温度 | — |
 
 ### 蜂鸣器
 
 - 型号: PS1720P02 (C96061) 无源压电式
-- 驱动: PN1 通过 Timer0A ISR 在 2kHz 下翻转 GPIO
-- 闹钟响铃: 200ms响 / 200ms停 交替，最长 10s 自动停止
-- 远程蜂鸣: `*SET:BEEP 10-5000` (ms)，Timer0A ISR 统一驱动
+- 驱动: **PK5 M0PWM7**，PWM0 Gen3 Out7 硬件 2kHz/50% 占空比
+- 闹钟: 300ms 响 / 300ms 停 对称切换 (PWMOutputState 零延迟开关)
+- 远程: `*SET:BEEP 10-5000` (ms)，超时后持久静音 watchdog
+- 持久静音: `beep_force_off` 每 100ms 反复 Beep_Off，*RST 后不取消
 
 ### 7段数码管字体
 
-支持 46 个字符：0-9、A-Z（全部26字母）、小写 c/e/h/i/j/l/n/o/r/u（与对应大写有视觉区分）
+支持 0-9、A-Z、小写 c/e/h/i/j/l/n/o/r/u、`-` `_` `.` `°` 共 50 个字符
+
+---
+
+## 命令解析架构
+
+### ExtractLine — 行整理
+
+非 MSG 命令丢弃所有空格，命令转大写。MSG 保留大小写和空格。
+
+```
+*SET:TIME HOUR MIN SEC 14 30 00 → *SET:TIMEHOURMINSEC143000
+```
+
+### ProcessCommand — 2-Pass 内联解析
+
+DATE/TIME/ALARM 三个 handler 采用 **2-pass + cmd_match 前缀匹配**:
+
+```
+Pass 1: char *q 副本指针扫关键词 → cmd_match匹配 → 建 kmap bitmask
+Pass 2: char *p 原指针逐字符扫数字 → v=v*10+(*p++-'0')内联解析 → vals[]
+Map:    按 kmap 顺序 vals → 目标变量 + 默认值填充
+```
+
+所有数字解析使用内联 `while(*p>='0'){v=v*10+(*p++-'0')}`，**零次 strtol 调用**，根除 ARMCC5 C89 `strtol(t, &t, 10)` 寄存器缓存截断缺陷。
+
+其他 SET handler (DISP/FORMAT/MSG/BEEP/LED/KEY/MODE/WEA/GAME) 用单 pass cmd_match。
+
+### 缩写支持
+
+`cmd_match` 前缀匹配 + `skip_kw_rest` 跳过缩写后缀:
+- MIN → MINUTE (skip "UTE")
+- SEC → SECOND (skip "OND")
+- DISP → DISPLAY (skip "LAY")
+- WEA → WEATHER (skip "THER")
+
+非法缩写自动报错: MONT ≠ MONTH, MI < MIN → ERROR SYNTAX
 
 ---
 
@@ -139,13 +186,11 @@ python virual_twin_panel.py
 
 ```
 波特率: 115200, 8N1, 无流控
-行格式: 命令以 \r\n 结束
-大小写: 不敏感
-缩写:   MINute → MIN/MINU/MINUT/MINUTE（match_abbrev: 大写必输，小写可选）
-空格:   允许多空格及冒号前空格 (*SET : TIME = *SET:TIME)
+行格式: 命令以 \r\n 结束，大小写不敏感
+缩写:   cmd_match 前缀匹配 + skip_kw_rest 后缀跳过
+空格:   允许多空格及冒号前空格
 错误:   ERROR SYNTAX / PARAM / RANGE / LINE TOO LONG
-解析:   2-pass 关键词感知 (Pass1 扫描关键词建 kmap → Pass2 提取整数 → 按 kmap 分配)
-稳定:   ARMCC5 C89 安全 — 零手写指针 while 循环，全部替换为 strspn/strcspn/strtol/memcpy
+编译:   #pragma O0 文件级禁用优化 + volatile 关键变量
 ```
 
 ### PC→MCU 命令（15条）
@@ -153,17 +198,17 @@ python virual_twin_panel.py
 | 命令 | 参数 | 说明 |
 |------|------|------|
 | `*RST` | [DATE/TIME/ALARM] | 复位，退出LED接管 |
-| `*SET:DATE` | YEAR/MONTH/DATE val | 设置日期 |
-| `*SET:TIME` | HOUR/MINute/SECond/OFF | 设置时间 |
-| `*SET:ALARM` | HOUR/MIN/SEC/OFF | 设置闹钟 |
+| `*SET:DATE` | YEAR/MONTH/DATE val | 设置日期 (2-pass解析) |
+| `*SET:TIME` | HOUR/MIN/SEC/OFF | 设置时间 (2-pass解析) |
+| `*SET:ALARM` | [DOW] HOUR/MIN/SEC/ON/OFF | 闹钟设置 (2-pass解析, 无DOW=当天) |
 | `*SET:DISPLAY` | ON/OFF | 显示开关 |
 | `*SET:FORMAT` | LEFT/RIGHT | 方向设置 |
-| `*SET:MSG` | text ≤32字节 | 滚动消息 |
-| `*SET:BEEP` | 10-5000ms | 远程蜂鸣 |
-| `*SET:LED` | hex2 (00=退出接管) | LED接管 |
+| `*SET:MSG` | text ≤32字节 | 滚动消息 (保留大小写) |
+| `*SET:BEEP` | 10-5000ms | 远程蜂鸣 (持久静音watchdog) |
+| `*SET:LED` | hex2 (00=退出接管) | LED接管 (10s自动退出) |
 | `*SET:KEY` | NAME | 虚拟按键 |
 | `*SET:MODE` | DAY/NIGHT | 昼夜模式 |
-| `*SET:WEA` | temp code | 天气数据 (支持 UNK 未知代码) |
+| `*SET:WEA` | temp code | 天气数据 |
 | `*SET:GAME` | START/SCORE n/OVER n/QUIT | 贪吃蛇游戏控制 |
 | `*GET` | TIME/DATE/FORMAT/ALARM/DISP/MODE | 查询 |
 | `*PING` | — | 心跳 |
@@ -174,9 +219,8 @@ python virual_twin_panel.py
 |------|------|------|
 | `*EVT:DISP <8char> <dpHex>` | 1Hz | 显示同步 |
 | `*EVT:LED <hex2>` | 1Hz | LED同步 |
-| `*EVT:KEY <NAME>` | 按下 | 物理按键 |
-| `*EVT:ALARM` | 触发 | 闹钟开始 |
-| `*EVT:ALARM_OFF` | 停止 | 闹钟结束 |
+| `*EVT:KEY <NAME>` | 按下 | 物理按键 (*SET:KEY不环回) |
+| `*EVT:ALARM` / `*EVT:ALARM_OFF` | 触发/停止 | 闹钟事件 |
 | `*EVT:EDIT <TYPE> <VALUE>` | 保存 | 编辑保存 |
 | `*EVT:MODE <STATE>` | 切换 | 模式切换 |
 | `*PONG <uptime>` | 应答 | PING响应 |
@@ -186,22 +230,22 @@ python virual_twin_panel.py
 ## PC 上位机
 
 ### P1 串口管理 ✅
-自动扫描COM口、波特率选择、连接/断开、状态栏实时显示（连接状态/FORMAT/MODE/uptime）
+自动扫描COM口、波特率选择、1Hz 自动 *PING、3s 超时离线检测+自动重连。状态栏四项: 连接/FORMAT/MODE/ALARM使能。
 
 ### P2 控制面板 ✅ — 7个标签页
 
 | 标签页 | 功能 |
 |--------|------|
-| 📅 日期时间 | SpinBox 年/月/日/时/分/秒，设置/读取/填入PC时间 |
-| ⏰ 闹钟调度 | 7天网格(Mon-Sun)，独立时间+使能，应用全部/复制/清除/读取 |
-| 🖥️ 显示控制 | 3模式按钮(同步MCU)、方向、速度、昼夜、LED、蜂鸣 |
+| 📅 日期时间 | SpinBox + 参数组合下拉框(YEAR/MONTH/DATE) + 缩写演示按钮 |
+| ⏰ 闹钟调度 | 7天网格(Mon-Sun)，独立时间+使能，每行设置/清除，应用全部/复制/清除 |
+| 🖥️ 显示控制 | 3模式按钮、方向、速度、昼夜、LED hex、蜂鸣ms |
 | 📝 滚动消息 | 文本输入(≤32字)、字数统计、8位预览 |
-| ⚡ 快捷操作 | *RST(确认框)、PING、9步演示序列 |
+| ⚡ 快捷操作 | *RST(确认框)、PING、演示序列 |
 | 🔌 扩展功能 | NTP对时、天气获取、自动昼夜、数据图表 |
-| 🐍 贪吃蛇 | 20×15网格，MCU按键操控，PC渲染，分数同步MCU数码管 |
+| 🐍 贪吃蛇 | 20×15网格，MCU按键操控，PC渲染 |
 
 ### P4 数字孪生 ✅
-8位7段数码管 + 8位LED + 10键虚拟按键，1:1镜像MCU状态。支持大小写字母显示。USER1/USER2 自动触发 NTP/天气。
+8位7段数码管 + 8位LED + 10键虚拟按键，1:1镜像MCU。NIGHT模式仅显4位。小数点独立占位渲染。USER1/USER2 自动触发 NTP/天气。
 
 ### P5 收发日志 ✅
 时间戳、颜色编码（发送蓝/应答绿/事件紫/错误红）、最大1000行、可导出
@@ -212,11 +256,11 @@ python virual_twin_panel.py
 
 | 编号 | 功能 | 分值 | 实现 |
 |------|------|------|------|
-| **E1** | NTP 网络对时 | 2分 | ntp.aliyun.com → *SET:TIME，USER1自动触发，LED7状态指示 |
-| **E2** | 天气获取 | 3分 | wttr.in 免费API → *SET:WEA，LED4-6指示，USER2短显，30分钟自动刷新 |
-| **E3** | 自动昼夜 | 2分 | astral 计算上海日出日落 → 自动 *SET:MODE DAY/NIGHT，60秒轮询 |
-| **E4** | 数据可视化 | 1分 | events.csv 事件记录 → matplotlib 图表（闹钟分布/每日事件/NTP时间线） |
-| **§4.3** | 多闹钟调度器 | 8分 | 7槽位(Mon-Sun)每天独立设置，MCU星期追踪，PC 7行网格管理 |
+| **E1** | NTP 网络对时 | 2分 | ntp.aliyun.com → *SET:TIME，USER1自动触发 |
+| **E2** | 天气获取 | 3分 | wttr.in 免费API → *SET:WEA，LED4-6指示，USER2短显 |
+| **E3** | 自动昼夜 | 2分 | astral 日出日落 → *SET:MODE DAY/NIGHT，60秒轮询 |
+| **E4** | 数据可视化 | 1分 | events.csv → matplotlib 图表 |
+| **§4.3** | 多闹钟调度器 | 8分 | 7槽位(Mon-Sun)独立设置+PC网格管理 |
 
 ---
 
@@ -224,46 +268,48 @@ python virual_twin_panel.py
 
 | 功能 | 实现 |
 |------|------|
-| 夜间模式4位限制 | `*EVT:MODE NIGHT` → PC数码管只显示前4位(HH.MM) |
-| 编辑高亮镜像 | PC追踪FUNC/SHIFT/SAVE按键状态，同步编辑字段位置 |
+| 夜间模式4位限制 | `*EVT:MODE NIGHT` → PC SEG仅前4位 |
+| 编辑高亮镜像 | PC追踪FUNC/SHIFT/SAVE按键 |
+| 小数点独立占位 | '.' 段码 0x80，dp圆点渲染 |
 
 ---
 
-## 🐍 贪吃蛇游戏 (§4.3 扩展自定义功能) ✅
+## 🐍 贪吃蛇游戏 ✅
 
-MCU 物理按键操控 + PC PyQt5 渲染 + MCU 7-SEG 分数同步的联动小游戏。
+MCU 物理按键操控 + PC PyQt5 渲染 + MCU 7-SEG 分数同步。
 
-### 架构
+| 按键 | 游戏功能 |
+|------|---------|
+| ADD | 蛇左转 |
+| FUNC | 蛇下转 |
+| SHIFT | 蛇右转 |
+| DISP | 蛇上转 |
+| USER1 | 暂停/继续 |
 
-```
-MCU (main.c)                          PC (snake_game.py)
-─────────────                         ───────────────────
-*SET:GAME START  → 数码管 "--------"  →  20×15 网格画布初始蛇
-*EVT:KEY ADD/FUNC/SHIFT/DISP         →  蛇方向控制 (左/下/右/上)
-                ← *SET:GAME SCORE n   ←  吃食物 +1 分
-                ← *SET:GAME OVER n    ←  撞墙/撞自己 → GAME OVER
-                ← *SET:GAME QUIT      ←  退出游戏 → 回时钟
-```
+---
 
-### 按键映射
+## ARMCC5 C89 编译器优化缺陷修复 (2026-06-27)
 
-| 按键 | 游戏中功能 |
-|------|-----------|
-| K0 (ADD) | 蛇向左 |
-| K1 (FUNC) | 蛇向下 |
-| K2 (SHIFT) | 蛇向右 |
-| K6 (DISP) | 蛇向上 |
-| USER1 (PJ0) | 暂停/继续 |
+ARM Compiler 5 V5.06 C89 模式下，优化器在多路径解析函数中产生寄存器缓存缺陷。修复历程:
 
-### 游戏特性
+| 尝试 | 方案 | 结果 |
+|------|------|------|
+| 1 | volatile `char *t` 局部变量 | 局部 volatile 被 ARMCC5 忽略 |
+| 2 | `for + strlen` 替换 `while(*ptr)` | 引入 `strlen` 调用改变栈布局 → 新缺陷 |
+| 3 | 文件域 `volatile char *g_pp` | 不够强，仍有缓存 |
+| 4 | `#pragma O0` 文件级 | **无优化即无缺陷** ✅ |
+| 5 | `strtol(t, &t, 10)` → 内联 `while(*p>='0'){v=v*10+(*p++-'0')}` | **根除 `&t` 写回缺陷** ✅ |
 
-- **20×15 网格**，150ms 刷新率，深绿背景配色
-- **蛇身**: 亮绿头部 (#8BC34A) + 标准绿身体 (#4CAF50)
-- **食物**: 红色圆点 (#FF5252)，随机刷新
-- **碰撞检测**: 墙壁 + 自身碰撞 → GAME OVER
-- **MCU 显示**: 游戏中数码管显示 "Sc 042  " 同步分数
-- **结束动画**: LED 全闪 2 次 (500ms)，数码管显示 "End 042"
-- **协议扩展**: `*SET:GAME START/SCORE/OVER/QUIT` 4 子命令
+**最终方案**: `#pragma O0` 文件级禁用优化 + 2-pass 内联数字解析 (零次 strtol)。稳定、可预测、无缓存缺陷。
+
+### 峰鸣器稳定性修复系列
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 闹钟声音高低不稳 | PWMGenDisable 停在高电平→引脚锁HIGH | Beep_Off 先 PWMOutputState(false) 再 Disable |
+| BEEP 超时不停 | `remote_beep_end_ms` 非 volatile→缓存 | 改为 volatile + 双检查点 |
+| *RST 打断静音 | `beep_force_off=0` 杀 watchdog | 改为 `Beep_Off()` + `beep_force_off=1` |
+| 持久静音 | 偶尔单次 Beep_Off 不够 | `beep_force_off` 每 100ms 循环 Beep_Off |
 
 ---
 
@@ -271,41 +317,19 @@ MCU (main.c)                          PC (snake_game.py)
 
 | 问题 | 修复 | 提交 |
 |------|------|------|
-| I2C总线竞态→幽灵按键 | SysTickIntDisable后加 `while(I2CMasterBusy())` | f476396 |
-| 栈溢出→命令解析损坏 | 文件域静态缓冲区替换栈局部变量 | f476396 |
-| edit_exit无条件恢复→RST后值被覆盖 | `else if (edit_mode != EDIT_NONE)` | f476396 |
-| 闹钟RST后立即触发 | 默认06:00:00 | f476396 |
-| 行溢出静默丢弃 | >64字符 → ERROR LINE TOO LONG | f476396 |
-| 按键每次触发两次 | i2c_keys取反 | a5d26d4 |
-| FORMAT RIGHT小数点不反转 | dp_buf跟随字符串反转 | a5d26d4 |
-| 段码位序错误（g→a vs a←g） | 用户字符串反转后计算 | 1f5d807 |
-| 蜂鸣器PN1→PK5 + DC→PWM | PWM0 Gen3 PK5 2kHz | 140f130 |
-
-### ARMCC5 编译器优化缺陷修复系列 (2026-06-25)
-
-ARM Compiler 5 V5.06 C89 模式下，指针 `while(*p)` 循环的值被缓存在寄存器中无法更新，导致死循环。全部替换为库函数或计数循环。
-
-| 问题 | 修复 | 提交 |
-|------|------|------|
-| `while(*t)` 死循环 (DATE/TIME/ALARM 解析器) | 2-pass 关键词感知解析器 (Pass1 扫描建 kmap, Pass2 提取整数) | 545dd6f |
-| `while(*x==' ')` 指针卡死 | 全部替换为 `x += strspn(x, " ")` | d2d26f6 |
-| `while(n<3)` 配合 `else{t++;}` 不推进 | 替换为 `t += strcspn(t, "0123456789")` | c7255ea |
-| kmap 寄存器缓存 → 12→02 时间值损坏 | `volatile int _k = kmap` 强制重载 | c7255ea |
-| `continue` 跳过 `for` 循环计数 | 全部 `continue` 替换为 if-else | 545dd6f |
-| `*RST` 子分支 `while(*p)` 死循环 | volatile 字符重读 + 超时保护 | d7ff029 |
-| 编译结果 | **10/10 协议测试通过 + TIMEOUT=0** | — |
-
-### 功能增强修复系列 (2026-06-25)
-
-| 问题 | 修复 | 提交 |
-|------|------|------|
-| 开机画面姓名/学号无闪烁 + LED不跟随 | LED跟随字符闪烁，每字符周期切换 | d7ff029 |
-| 编辑退出不恢复备份值 | 进入编辑时备份，退出时 (仅 SAVE/FUNC长按) 恢复 | d7ff029 |
-| MSG ≤8字符走后残留滚动数据 | 统一用 scroll_buf + memset 清空后再拷贝 | 5d4d023 |
-| 天气显示 <5s 过早退出 | 直接比较 `g_tick_ms >= end_ms`，避免 Tick_TimedOut 下溢 | 5d4d023 |
-| 显示鬼影残留 | 三段式刷新: 全灭→加载数据→选通 | 5d4d023 |
-| WEA 未知天气代码无处理 | 添加 UNK 回退分支 | d7ff029 |
-| 按键响应不灵敏 | 消抖 40→20ms，优化 key_scan 逻辑 | — |
+| I2C总线竞态→幽灵按键 | SysTickIntDisable + while(I2CMasterBusy) | f476396 |
+| 栈溢出→命令损坏 | 文件域静态缓冲区 | f476396 |
+| edit_exit 无条件恢复 | `else if (edit_mode != EDIT_NONE)` | f476396 |
+| 闹钟 *RST 后立即触发 | 默认 06:00:00 | f476396 |
+| 行溢出静默丢弃 | ERROR LINE TOO LONG | f476396 |
+| 按键双触发 | i2c_keys 取反 | a5d26d4 |
+| FORMAT RIGHT dp 不反转 | dp_buf 跟随字符串反转 | a5d26d4 |
+| 段码位序错误 | 反转后计算 | 1f5d807 |
+| 蜂鸣器 PK5 PWM | PWM0 Gen3 Out7 2kHz | 140f130 |
+| 按键扫描幻影 KEV_UP | 统一状态机 + KS_DEBOUNCE_UP | 69a6fe5 |
+| 滚动中 SPEED 误退出 | `ke == KEV_DOWN` 守卫 | 6305de6 |
+| 命令解析 2-pass + 内联 | cmd_match + 去空格 ExtractLine + 零 strtol | 54b3cd1 |
+| BEEP 持久静音 watchdog | beep_force_off 循环 | e98e636 |
 
 ---
 
@@ -316,8 +340,9 @@ ARM Compiler 5 V5.06 C89 模式下，指针 `while(*p)` 循环的值被缓存在
 | 第1周 | 底层驱动、开机画面、时钟走时 | ✅ |
 | 第2周 | 闹钟、编辑FSM、串口协议全集 | ✅ |
 | 第3周 | PC数字孪生、P2控制面板、E1-E4扩展 | ✅ |
-| 已完成 | §4.3 多闹钟调度器（自定义功能 8分） | ✅ |
-| 已完成 | P4 打磨（编辑高亮镜像、夜间4位限定） | ✅ |
-| 已完成 | 贪吃蛇游戏 (MCU按键操控 + PC渲染 + 分数同步) | ✅ |
-| 已完成 | ARMCC5 编译器安全重构 (10/10 TIMEOUT=0) | ✅ |
-| 已完成 | 外部25MHz晶振 + 消鬼影刷新 + MSG/天气超时修复 | ✅ |
+| 已完成 | §4.3 多闹钟调度器 | ✅ |
+| 已完成 | P4 打磨 (编辑高亮镜像、夜间4位) | ✅ |
+| 已完成 | 贪吃蛇游戏 | ✅ |
+| 已完成 | 2-pass 内联解析 + ARMCC5 编译器适配 | ✅ |
+| 已完成 | 蜂鸣器 PK5 PWM + 持久静音 watchdog | ✅ |
+| 已完成 | 按键统一状态机 + 消抖释放 | ✅ |

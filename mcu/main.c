@@ -378,7 +378,7 @@ static uint8_t eat_kw(char **pp, const char *kw)
         char a = *s, b = *k;
         if (a >= 'a' && a <= 'z') a -= 32;
         if (b >= 'a' && b <= 'z') b -= 32;
-        if (a != b) return 0;
+        if (a != b) break;  /* prefix ended, stop comparing */
         s++; k++;
         matched = 1;
     }

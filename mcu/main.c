@@ -2290,7 +2290,6 @@ int main(void)
                 Beep_Off();
             }
         }
-        }
 
         /* 按键事件处理 */
         {

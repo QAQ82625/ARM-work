@@ -1555,6 +1555,9 @@ void ProcessCommand(char *cmd)
                 else if (cmd_match(q, "DATE"))  { kmap |= 4; q += 4; skip_kw_rest(&q, ""); }
                 else break;
             }
+            /* Any remaining alpha = unknown keyword → error */
+            if (*q && ((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z')))
+                { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
 
             /* Pass 2: extract integers (YEAR=4digits only if kmap&1, else all 2digits) */
             wi = 0;
@@ -1622,6 +1625,9 @@ void ProcessCommand(char *cmd)
                 else if (cmd_match(q, "SEC"))   { kmap |= 4; q += 3; skip_kw_rest(&q, "OND"); }
                 else break;
             }
+            /* Any remaining alpha = unknown keyword → error */
+            if (*q && ((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z')))
+                { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
 
             /* Pass 2: extract integers (max 2 digits each, inline, no strtol) */
             wi = 0;
@@ -1693,6 +1699,9 @@ void ProcessCommand(char *cmd)
                 else if (cmd_match(q, "SEC"))   { kmap |= 4; q += 3; skip_kw_rest(&q, "OND"); }
                 else break;
             }
+            /* Any remaining alpha = unknown keyword → error */
+            if (*q && ((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z')))
+                { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
 
             /* Pass 2: extract integers (max 2 digits each, inline, no strtol) */
             wi = 0;

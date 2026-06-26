@@ -2174,16 +2174,16 @@ int main(void)
                 }
             }
 
-            /* 闹钟响铃 — PWM0 Gen3 2kHz, 200ms on/off 相位切换 */
+            /* 闹钟响铃 — PWM0 Gen3 2kHz, 300ms on/300ms off 相位切换 */
             if (g_alarm_beep_active) {
-                uint32_t total_ms = 10000 + (uint32_t)g_alarm_weather_beeps * 400;
+                uint32_t total_ms = 10000 + (uint32_t)g_alarm_weather_beeps * 600;
                 uint32_t elapsed = g_tick_ms - beep_start_ms;
                 if (elapsed >= total_ms) {
                     Alarm_Stop();
                     g_alarm_weather_beeps = 0;
                     g_alarm_weather_led = 0;
                 } else {
-                    uint8_t phase_in_cycle = (uint8_t)((elapsed / 200) & 0x01);
+                    uint8_t phase_in_cycle = (uint8_t)((elapsed / 300) & 0x01);
                     if (phase_in_cycle != beep_phase_on) {
                         beep_phase_on = phase_in_cycle;
                         if (beep_phase_on) { Beep_On(); } else { Beep_Off(); }

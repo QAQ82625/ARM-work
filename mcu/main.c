@@ -1760,6 +1760,7 @@ void ProcessCommand(char *cmd)
             uint8_t len;
             p += 3;
             skip_kw_rest(&p, "");
+            while (*p == ' ') p++;
             msg_text = p;
             if (*msg_text == '\0') { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             len = (uint8_t)strlen(msg_text);

@@ -297,7 +297,7 @@ static uint8_t  beep_phase_on = 0;
 /* 远程蜂鸣（非阻塞） */
 static volatile uint8_t  remote_beep_active = 0;
 static volatile uint32_t remote_beep_end_ms = 0;
-static uint8_t  beep_kill_count;       /* 强制静音再确认次数 */
+static volatile uint8_t  beep_force_off;       /* 持久静音: 每100ms持续Beep_Off */
 
 /* 显示扫描静态变量 */
 static uint8_t  disp_cur_digit = 0;
@@ -565,6 +565,7 @@ void Key_Scan(void)
  * ================================================================ */
 static void Beep_On(void)
 {
+    beep_force_off = 0;  /* 解除持久静音 */
     PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
     PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
@@ -573,6 +574,7 @@ static void Beep_Off(void)
 {
     PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
     PWMGenDisable(PWM0_BASE, PWM_GEN_3);
+    beep_force_off = 1;  /* 启动持久静音 */
 }
 
 /* 闹钟相位切换用 — PWM始终运行, 只开关输出, 零延迟 */
@@ -1550,7 +1552,7 @@ void ProcessCommand(char *cmd)
             g_scroll_speed_level = 0;
             g_alarm_beep_active = 0;
             remote_beep_active  = 0;
-            beep_kill_count = 0;
+            beep_force_off = 0;
             {
                 uint8_t ai;
                 for (ai = 0; ai < ALARM_SLOTS; ai++) {
@@ -2206,15 +2208,13 @@ int main(void)
                 }
             }
 
-            /* 远程蜂鸣 — 到期后连续3次(300ms)强制Beep_Off确保彻底静音 */
-            if (remote_beep_active) {
-                if (g_tick_ms >= remote_beep_end_ms) {
-                    remote_beep_active = 0;
-                    beep_kill_count = 3;  /* 启动watchdog: 再清3次 */
-                }
+            /* 远程蜂鸣 — 超时后启动持久静音, 每100ms反复Beep_Off */
+            if (remote_beep_active && g_tick_ms >= remote_beep_end_ms) {
+                remote_beep_active = 0;
+                Beep_Off();  /* 首次关断 + 设置 beep_force_off=1 */
             }
-            if (beep_kill_count > 0) {
-                beep_kill_count--;
+            /* 持久静音循环: 确保蜂鸣器永远死透 */
+            if (beep_force_off) {
                 Beep_Off();
             }
 
@@ -2295,7 +2295,10 @@ int main(void)
             /* Beep timeout guard — checked after every command */
             if (remote_beep_active && g_tick_ms >= remote_beep_end_ms) {
                 remote_beep_active = 0;
-                beep_kill_count = 3;
+                Beep_Off();
+            }
+            if (beep_force_off) {
+                Beep_Off();
             }
         }
 

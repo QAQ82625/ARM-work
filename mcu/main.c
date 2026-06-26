@@ -564,12 +564,12 @@ void Key_Scan(void)
  * ================================================================ */
 static void Beep_On(void)
 {
-    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
 }
 
 static void Beep_Off(void)
 {
-    PWMGenDisable(PWM0_BASE, PWM_GEN_3);
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
 }
 
 /* ================================================================
@@ -1137,8 +1137,8 @@ static void GPIO_Init(void)
                     PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
     PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, 8000);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 2000);
-    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
-    PWMGenDisable(PWM0_BASE, PWM_GEN_3);
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
+    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
 static void I2C_Init(void)

@@ -1470,6 +1470,19 @@ void Edit_HandleKey(key_code_t code, key_event_t evt)
     default: break;
     }
 }
+/* DOW name → alarm slot index. SUN=6, MON=0, ... SAT=5. Returns -1 if not found. */
+static int8_t dow_to_slot(const char *s)
+{
+    if (cmd_match(s, "MON")) return 0;
+    if (cmd_match(s, "TUE")) return 1;
+    if (cmd_match(s, "WED")) return 2;
+    if (cmd_match(s, "THU")) return 3;
+    if (cmd_match(s, "FRI")) return 4;
+    if (cmd_match(s, "SAT")) return 5;
+    if (cmd_match(s, "SUN")) return 6;
+    return -1;
+}
+
 void ProcessCommand(char *cmd)
 {
     char *p;
@@ -1680,6 +1693,16 @@ void ProcessCommand(char *cmd)
 
             ss = (int)ALARM_IDX;
             se = ss + 1;
+
+            /* DOW slot override: *SET:ALARM SUN ... etc */
+            q = p;
+            { int8_t ds = dow_to_slot(q);
+              if (ds >= 0) {
+                  ss = ds; se = ds + 1;
+                  q += 3; skip_kw_rest(&q, "");
+                  p = q;  /* advance main pointer past DOW token */
+              }
+            }
 
             /* ON/OFF check (before 2-pass) */
             q = p;

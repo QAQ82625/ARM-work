@@ -628,12 +628,10 @@ static void UART_PutStr(const char *msg)
 void UART_PutStrNB(const char *msg)
 {
     int i, n = (int)strlen(msg);
-    g_dbg = 0xF0;
     for (i = 0; i < n; i++) {
         /* 使用阻塞版本：等待 FIFO 有空间再写入，避免字符丢弃 */
         UARTCharPut(UART0_BASE, msg[i]);
     }
-    g_dbg = 0xF1;
     led_uart_tx_active = 1;
 }
 

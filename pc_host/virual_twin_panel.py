@@ -683,10 +683,14 @@ class VirtualTwinPanel(QMainWindow):
             ss = QSpinBox(); ss.setRange(0, 59); ss.setValue(0); ss.setPrefix("秒"); ss.setMaximumWidth(70)
             cb = QCheckBox("启用"); cb.setChecked(i < 5)
             row.addWidget(hs); row.addWidget(ms); row.addWidget(ss); row.addWidget(cb)
-            btn_set = QPushButton("设置"); btn_set.setMaximumWidth(50)
             day = days_short[i]
+            btn_set = QPushButton("设置"); btn_set.setMaximumWidth(50)
             btn_set.clicked.connect(lambda checked, d=day, h=hs, m=ms, s=ss, c=cb: self._on_alarm_set_one(d, h, m, s, c))
             row.addWidget(btn_set)
+            btn_clr = QPushButton("✕"); btn_clr.setMaximumWidth(30)
+            btn_clr.setToolTip(f"清除{day}闹钟")
+            btn_clr.clicked.connect(lambda checked, d=day, h=hs, m=ms, s=ss, c=cb: self._on_alarm_clear_one(d, h, m, s, c))
+            row.addWidget(btn_clr)
             row.addStretch()
             layout.addLayout(row)
             self.alarm_spins.append((hs, ms, ss, cb))
@@ -1229,6 +1233,13 @@ class VirtualTwinPanel(QMainWindow):
         QTimer.singleShot(200, lambda: self.send_cmd(f"*SET:ALARM {day} {'ON' if cb.isChecked() else 'OFF'}"))
         self.lbl_alarm_status.setText(f"{day} 闹钟已设置")
         self.lbl_alarm_status.setStyleSheet("color: #95E77E; font-size: 13px;")
+
+    def _on_alarm_clear_one(self, day, hs, ms, ss, cb):
+        """Clear a single day's alarm"""
+        hs.setValue(6); ms.setValue(0); ss.setValue(0); cb.setChecked(False)
+        self.send_cmd(f"*SET:ALARM {day} OFF")
+        self.lbl_alarm_status.setText(f"{day} 闹钟已清除")
+        self.lbl_alarm_status.setStyleSheet("color: #FFE66D; font-size: 13px;")
 
     def _on_alarm_copy_workdays(self):
         """Copy row 0 (Monday) values to Mon-Fri"""
@@ -1883,29 +1894,8 @@ class VirtualTwinPanel(QMainWindow):
         self.leds1[1].set_state(self._alarm_blink_on)
 
     def _update_alarm_ui(self):
-        """Update alarm tab UI based on current alarm state"""
-        if self._alarm_enabled:
-            self.btn_alarm_toggle.setText("禁用闹钟 ✕")
-            self.btn_alarm_toggle.setStyleSheet(
-                "background-color: #8B0000; color: white; font-weight: bold;"
-            )
-            self.lbl_alarm_status.setText(
-                f"闹钟已启用: {self._alarm_time}"
-            )
-            self.lbl_alarm_status.setStyleSheet(
-                "color: #95E77E; font-size: 14px;"
-            )
-        else:
-            self.btn_alarm_toggle.setText("启用闹钟 ✓")
-            self.btn_alarm_toggle.setStyleSheet(
-                "background-color: #006400; color: white; font-weight: bold;"
-            )
-            self.lbl_alarm_status.setText(
-                f"闹钟已禁用"
-            )
-            self.lbl_alarm_status.setStyleSheet(
-                "color: #888; font-size: 14px;"
-            )
+        """Update alarm tab UI — no-op now, per-day buttons handle their own state"""
+        pass
 
     # ================================================================
     # 日志工具

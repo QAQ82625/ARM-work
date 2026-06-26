@@ -2354,12 +2354,21 @@ int main(void)
 
         /* UART 行接收 */
         if (rx_line_ready) {
-            g_dbg = 0x01;
             rx_line_ready = 0;
             ExtractLine();
-            g_dbg = 0x02;
-            ProcessCommand(cmd_line);
-            g_dbg = 0x03;
+            /* Copy cmd_line to stack — isolate from any ISR/ring-buffer
+             * writes that could corrupt the global buffer mid-parse.
+             * If this fixes truncation → ISR race confirmed. */
+            {
+                char cmd_copy[LINE_MAX];
+                int ci;
+                for (ci = 0; ci < LINE_MAX; ci++) {
+                    cmd_copy[ci] = cmd_line[ci];
+                    if (cmd_line[ci] == '\0') break;
+                }
+                cmd_copy[LINE_MAX - 1] = '\0';
+                ProcessCommand(cmd_copy);
+            }
         }
 
         /* 按键事件处理 */

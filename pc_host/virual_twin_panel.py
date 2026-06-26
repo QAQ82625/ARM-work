@@ -35,7 +35,7 @@ class SimpleSevenSegment(QWidget):
         s = str(digit)[0] if digit != '_' else ' '
         if s == '.':
             self.digit = ' '
-            self.dp = True   /* dot char = dp lit, no 7-seg */
+            self.dp = True   # dot char: blank 7-seg, dp lit
         else:
             self.digit = s
             self.dp = dp
@@ -116,7 +116,7 @@ class SimpleSevenSegment(QWidget):
         'u': ['c', 'd', 'e'],
         '-': ['g'],
         '_': ['d'],
-        '.': [],   /* dot char: no 7-seg, dp drawn below */
+        '.': [],   # dot char: no 7-seg, dp drawn below
         ' ': []
         }
 
@@ -1595,7 +1595,10 @@ class VirtualTwinPanel(QMainWindow):
                     ch_raw = disp[i] if disp[i] != '_' else ' '
                     if self._current_mode == "NIGHT" and i >= 4:
                         ch_raw = ' '
-                    self.segments[i].set_digit(ch_raw, dp_on)
+                    if ch_raw == '.':
+                        self.segments[i].set_digit('.', False)
+                    else:
+                        self.segments[i].set_digit(ch_raw, dp_on)
                 # 更新 MCU 时间显示
                 try:
                     h, m, s = int(disp[0:2]), int(disp[2:4]), int(disp[4:6])

@@ -878,10 +878,10 @@ static void Clock_FormatDisplay(void)
         if (g_format == FMT_RIGHT) {
             for (i = 0; i < DISP_LEN; i++) rev[i] = str[DISP_LEN - 1 - i];
             rev[DISP_LEN] = '\0';
-            dp = (1 << 6) | (1 << 4);
+            dp = (1 << 4);  /* 1 dot: YYYY.MMDD → reversed .DDMMYYYY */
             Display_SetStr(rev, dp);
         } else {
-            dp = (1 << 4) | (1 << 2);
+            dp = (1 << 4);  /* 1 dot: YYYY.MMDD (FAQ Q12: 仅第4位有dp) */
             Display_SetStr(str, dp);
         }
     }
@@ -2406,10 +2406,11 @@ int main(void)
                     } else if (kc == KEY_USER1 && ke == KEV_UP) {
                         g_user1_held = 0;
                     } else if (kc == KEY_USER1 && ke == KEV_LONG) {
-                        /* Long-press USER1: display NTP sync status */
+                        /* Long-press USER1: display n.SY.xx (dots via dp_bitmap) */
                         g_user1_held = 0;
                         {
                             char ntp_disp[9];
+                            uint8_t ntp_dp;
                             uint8_t hours;
                             const char *st;
                             if (g_ntp_synced == 0) {
@@ -2420,10 +2421,12 @@ int main(void)
                                 st = (g_ntp_synced == 1) ? "OK" : "DR";
                             }
                             if (g_ntp_synced == 0)
-                                sprintf(ntp_disp, "_.SY.%s", st);
+                                sprintf(ntp_disp, "_ SY %s ", st);
                             else
-                                sprintf(ntp_disp, "%1u.SY.%s", hours, st);
-                            Display_SetStr(ntp_disp, 0x00);
+                                sprintf(ntp_disp, "%1u SY %s ", hours, st);
+                            /* dp at position 0 (after n/_) and position 2 (after SY) */
+                            ntp_dp = (1 << 7) | (1 << 5);
+                            Display_SetStr(ntp_disp, ntp_dp);
                             g_state = STATE_WEATHER;
                             g_msg_end_ms = g_tick_ms + 3000;
                         }

@@ -672,6 +672,7 @@ class VirtualTwinPanel(QMainWindow):
         grid = QGridLayout()
         grid.setSpacing(4)
         days = ["周一 Mon", "周二 Tue", "周三 Wed", "周四 Thu", "周五 Fri", "周六 Sat", "周日 Sun"]
+        days_short = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
         self.alarm_spins = []  # [(h_spin, m_spin, s_spin, enabled_cb)]
         for i, label in enumerate(days):
             row = QHBoxLayout()
@@ -682,6 +683,10 @@ class VirtualTwinPanel(QMainWindow):
             ss = QSpinBox(); ss.setRange(0, 59); ss.setValue(0); ss.setPrefix("秒"); ss.setMaximumWidth(70)
             cb = QCheckBox("启用"); cb.setChecked(i < 5)
             row.addWidget(hs); row.addWidget(ms); row.addWidget(ss); row.addWidget(cb)
+            btn_set = QPushButton("设置"); btn_set.setMaximumWidth(50)
+            day = days_short[i]
+            btn_set.clicked.connect(lambda checked, d=day, h=hs, m=ms, s=ss, c=cb: self._on_alarm_set_one(d, h, m, s, c))
+            row.addWidget(btn_set)
             row.addStretch()
             layout.addLayout(row)
             self.alarm_spins.append((hs, ms, ss, cb))
@@ -1206,17 +1211,24 @@ class VirtualTwinPanel(QMainWindow):
     # ── Tab 2: 闹钟 ─────────────────────────
     # ── Tab 2: 多闹钟 ───────────────────────
     def _on_alarm_apply_all(self):
-        """Send all 7 alarm slots to MCU"""
+        """Send all 7 alarm slots to MCU (sequential, 400ms apart)"""
         days = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
         for i, (day, (hs, ms, ss, cb)) in enumerate(zip(days, self.alarm_spins)):
-            cmd = f"*SET:ALARM {day} HOUR {hs.value()} MIN {ms.value()} SEC {ss.value()}"
-            delay = i * 150
-            QTimer.singleShot(delay, lambda c=cmd: self.send_cmd(c))
-            enabled_cmd = f"*SET:ALARM {day} {'ON' if cb.isChecked() else 'OFF'}"
-            QTimer.singleShot(delay + 80, lambda c=enabled_cmd: self.send_cmd(c))
+            time_cmd = f"*SET:ALARM {day} HOUR {hs.value()} MIN {ms.value()} SEC {ss.value()}"
+            en_cmd  = f"*SET:ALARM {day} {'ON' if cb.isChecked() else 'OFF'}"
+            base = i * 400
+            QTimer.singleShot(base, lambda c=time_cmd: self.send_cmd(c))
+            QTimer.singleShot(base + 200, lambda c=en_cmd: self.send_cmd(c))
         self.lbl_alarm_status.setText("已全部应用")
         self.lbl_alarm_status.setStyleSheet("color: #95E77E; font-size: 13px;")
         self._log_csv("ALARM_SET", "ALL_7_SLOTS")
+
+    def _on_alarm_set_one(self, day, hs, ms, ss, cb):
+        """Set a single day's alarm"""
+        self.send_cmd(f"*SET:ALARM {day} HOUR {hs.value()} MIN {ms.value()} SEC {ss.value()}")
+        QTimer.singleShot(200, lambda: self.send_cmd(f"*SET:ALARM {day} {'ON' if cb.isChecked() else 'OFF'}"))
+        self.lbl_alarm_status.setText(f"{day} 闹钟已设置")
+        self.lbl_alarm_status.setStyleSheet("color: #95E77E; font-size: 13px;")
 
     def _on_alarm_copy_workdays(self):
         """Copy row 0 (Monday) values to Mon-Fri"""
@@ -1228,11 +1240,13 @@ class VirtualTwinPanel(QMainWindow):
         self.lbl_alarm_status.setText("已复制到周一至周五")
 
     def _on_alarm_clear_all(self):
-        """Disable all alarms"""
+        """Disable all alarms and reset to default 6:00:00"""
         days = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
         for i, day in enumerate(days):
-            QTimer.singleShot(i * 80, lambda d=day: self.send_cmd(f"*SET:ALARM {d} OFF"))
-        self.lbl_alarm_status.setText("已全部禁用")
+            hs, ms, ss, cb = self.alarm_spins[i]
+            hs.setValue(6); ms.setValue(0); ss.setValue(0); cb.setChecked(False)
+            QTimer.singleShot(i * 400, lambda d=day: self.send_cmd(f"*SET:ALARM {d} OFF"))
+        self.lbl_alarm_status.setText("已全部清除并禁用")
         self._update_alarm_ui()
 
     def _on_set_alarm(self):

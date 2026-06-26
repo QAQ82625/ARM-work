@@ -563,16 +563,14 @@ void Key_Scan(void)
  * ================================================================ */
 static void Beep_On(void)
 {
-    GPIOPinConfigure(GPIO_PK5_M0PWM7);
-    GPIOPinTypePWM(GPIO_PORTK_BASE, GPIO_PIN_5);
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
     PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
 static void Beep_Off(void)
 {
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
     PWMGenDisable(PWM0_BASE, PWM_GEN_3);
-    GPIOPinTypeGPIOOutput(GPIO_PORTK_BASE, GPIO_PIN_5);
-    GPIOPinWrite(GPIO_PORTK_BASE, GPIO_PIN_5, GPIO_PIN_5);
 }
 
 /* ================================================================

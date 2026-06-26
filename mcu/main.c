@@ -106,6 +106,7 @@ static uint8_t seg7_encode(char ch)
     }
     if (ch == '-')  return 0x40;
     if (ch == '_')  return 0x08;
+    if (ch == '.')  return 0x80;  /* dot as independent digit (dp segment only) */
     if (ch == 0xB0 || ch == '\'') return 0x63;  /* ° degree symbol (segments a,b,f,g) */
     if (ch == ' ')  return 0x00;
     return 0x00;
@@ -2406,11 +2407,12 @@ int main(void)
                     } else if (kc == KEY_USER1 && ke == KEV_UP) {
                         g_user1_held = 0;
                     } else if (kc == KEY_USER1 && ke == KEV_LONG) {
-                        /* Long-press USER1: display n.SY.xx (dots via dp_bitmap) */
+                        /* Long-press USER1: display n.SY.xx
+                         * 8-digit layout: [n][.][S][Y][.][x][x][ ]
+                         * Dot at pos 1 & 4 as independent chars (FAQ Q12 style) */
                         g_user1_held = 0;
                         {
                             char ntp_disp[9];
-                            uint8_t ntp_dp;
                             uint8_t hours;
                             const char *st;
                             if (g_ntp_synced == 0) {
@@ -2421,12 +2423,10 @@ int main(void)
                                 st = (g_ntp_synced == 1) ? "OK" : "DR";
                             }
                             if (g_ntp_synced == 0)
-                                sprintf(ntp_disp, "_ SY %s ", st);
+                                sprintf(ntp_disp, "_.SY.%s ", st);
                             else
-                                sprintf(ntp_disp, "%1u SY %s ", hours, st);
-                            /* dp at position 0 (after n/_) and position 2 (after SY) */
-                            ntp_dp = (1 << 7) | (1 << 5);
-                            Display_SetStr(ntp_disp, ntp_dp);
+                                sprintf(ntp_disp, "%1u.SY.%s ", hours, st);
+                            Display_SetStr(ntp_disp, 0x00);
                             g_state = STATE_WEATHER;
                             g_msg_end_ms = g_tick_ms + 3000;
                         }

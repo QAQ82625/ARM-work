@@ -32,8 +32,13 @@ class SimpleSevenSegment(QWidget):
         self.dp = False
 
     def set_digit(self, digit, dp=False):
-        self.digit = str(digit)[0] if digit != '_' else ' '
-        self.dp = dp
+        s = str(digit)[0] if digit != '_' else ' '
+        if s == '.':
+            self.digit = ' '
+            self.dp = True   /* dot char = dp lit, no 7-seg */
+        else:
+            self.digit = s
+            self.dp = dp
         self.update()
 
     def paintEvent(self, event):
@@ -111,6 +116,7 @@ class SimpleSevenSegment(QWidget):
         'u': ['c', 'd', 'e'],
         '-': ['g'],
         '_': ['d'],
+        '.': [],   /* dot char: no 7-seg, dp drawn below */
         ' ': []
         }
 

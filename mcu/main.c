@@ -1552,7 +1552,8 @@ void ProcessCommand(char *cmd)
             g_scroll_speed_level = 0;
             g_alarm_beep_active = 0;
             remote_beep_active  = 0;
-            beep_force_off = 0;
+            Beep_Off();
+            beep_force_off = 1;   /* *RST 后确保持续静音 */
             {
                 uint8_t ai;
                 for (ai = 0; ai < ALARM_SLOTS; ai++) {

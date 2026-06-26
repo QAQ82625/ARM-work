@@ -1638,6 +1638,12 @@ void ProcessCommand(char *cmd)
             max_d = days_in_month[g_date.m - 1];
             if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
             if (g_date.d > max_d) g_date.d = max_d;
+            {
+                char dbg[64];
+                sprintf(dbg, "*DBG D cmd=%.32s v=%d,%d,%d k=%d\r\n",
+                        cmd, vals[0], vals[1], vals[2], kmap);
+                UART_PutStrNB(dbg);
+            }
             UART_PutStrNB("OK\r\n");
             return;
         }
@@ -1724,6 +1730,12 @@ void ProcessCommand(char *cmd)
             if (s_val >= 0) {
                 if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
                 g_time.s = (uint8_t)s_val;
+            }
+            {
+                char dbg[64];
+                sprintf(dbg, "*DBG T cmd=%.32s v=%d,%d,%d k=%d\r\n",
+                        cmd, vals[0], vals[1], vals[2], kmap);
+                UART_PutStrNB(dbg);
             }
             UART_PutStrNB("OK\r\n");
             return;
@@ -1833,6 +1845,12 @@ void ProcessCommand(char *cmd)
                     g_alarm_slot[si].s = (uint8_t)s_val;
                     g_alarm_slot_enabled_mask |= (1U << si);
                 }
+            }
+            {
+                char dbg[64];
+                sprintf(dbg, "*DBG A cmd=%.32s v=%d,%d,%d k=%d\r\n",
+                        cmd, vals[0], vals[1], vals[2], kmap);
+                UART_PutStrNB(dbg);
             }
             UART_PutStrNB("OK\r\n");
             return;

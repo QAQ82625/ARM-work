@@ -258,10 +258,6 @@ uint8_t g_weather_valid;
 uint8_t  g_ntp_synced;
 uint32_t g_ntp_last_sync_ms;
 
-/* USER1 long-press NTP status display */
-static uint32_t g_user1_press_ms;
-static uint8_t  g_user1_held;
-
 char    g_msg_text[33];
 uint8_t  g_msg_len;
 uint8_t  g_msg_active;
@@ -272,10 +268,9 @@ volatile uint16_t g_game_score;
 
 /* 按键状态机静态变量 */
 static ks_state_t    ks_state      = KS_IDLE;
-static uint8_t       ks_stable;
+static uint16_t      ks_stable;
 static uint32_t      ks_change_time;
 static key_code_t    ks_held_key;
-static uint8_t       ks_user_prev;
 
 /* 编辑 FSM 静态变量 */
 static edit_field_t edit_field;
@@ -403,7 +398,11 @@ static uint8_t I2C_ReadByte(uint8_t dev_addr, uint8_t reg)
  * ================================================================ */
 static uint8_t Keys_ReadRaw(void)
 {
-    uint8_t val = I2C_ReadByte(TCA6424_I2CADDR, TCA6424_INPUT_PORT0);
+    uint8_t val;
+    SysTickIntDisable();
+    while (I2CMasterBusy(I2C0_BASE)) {}  /* wait for in-flight I2C */
+    val = I2C_ReadByte(TCA6424_I2CADDR, TCA6424_INPUT_PORT0);
+    SysTickIntEnable();
     return ~val;
 }
 
@@ -417,16 +416,18 @@ static uint8_t Keys_ReadUser(void)
     return result;
 }
 
-static key_code_t raw_to_keycode(uint8_t raw)
+static key_code_t raw_to_keycode(uint16_t raw)
 {
-    if (raw & 0x01) return KEY_ADD;    /* K0 */
-    if (raw & 0x02) return KEY_FUNC;   /* K1 */
-    if (raw & 0x04) return KEY_SHIFT;  /* K2 */
-    if (raw & 0x08) return KEY_SPEED;  /* K3 */
-    if (raw & 0x10) return KEY_SAVE;   /* K4 */
-    if (raw & 0x20) return KEY_FORMAT; /* K5 */
-    if (raw & 0x40) return KEY_DISP;   /* K6 */
-    if (raw & 0x80) return KEY_EXT;    /* K7 */
+    if (raw & 0x0001) return KEY_ADD;     /* K0  I2C bit 0 */
+    if (raw & 0x0002) return KEY_FUNC;    /* K1  I2C bit 1 */
+    if (raw & 0x0004) return KEY_SHIFT;   /* K2  I2C bit 2 */
+    if (raw & 0x0008) return KEY_SPEED;   /* K3  I2C bit 3 */
+    if (raw & 0x0010) return KEY_SAVE;    /* K4  I2C bit 4 */
+    if (raw & 0x0020) return KEY_FORMAT;  /* K5  I2C bit 5 */
+    if (raw & 0x0040) return KEY_DISP;    /* K6  I2C bit 6 */
+    if (raw & 0x0080) return KEY_EXT;     /* K7  I2C bit 7 */
+    if (raw & 0x0100) return KEY_USER1;   /* GPIO bit 8 */
+    if (raw & 0x0200) return KEY_USER2;   /* GPIO bit 9 */
     return KEY_NONE;
 }
 
@@ -454,53 +455,59 @@ key_event_t Key_GetEvent(key_code_t *out)
 
 /* ================================================================
  * 按键扫描（每 10ms 调用）
+ *
+ * 统一状态机: I2C 按键 (8位) + GPIO USER1/USER2 (bit 8/9)
+ * all_raw = uint16_t { USER2, USER1, K7..K0 }
+ * KS_DEBOUNCE_UP 防释放毛刺; 无幻影 KEV_UP
  * ================================================================ */
 void Key_Scan(void)
 {
-    uint8_t tca_raw;
-    uint8_t user_raw;
-    uint8_t all_raw;
+    uint8_t  tca_raw;
+    uint8_t  user_raw;
+    uint16_t all_raw;
 
     tca_raw  = Keys_ReadRaw();
     user_raw = Keys_ReadUser();
-    all_raw = tca_raw;
+    all_raw = (uint16_t)tca_raw | ((uint16_t)user_raw << 8);
 
     switch (ks_state) {
 
     case KS_IDLE:
         if (all_raw != 0) {
-            ks_state = KS_DEBOUNCE_DOWN;
+            ks_state       = KS_DEBOUNCE_DOWN;
             ks_change_time = g_tick_ms;
         }
         break;
 
     case KS_DEBOUNCE_DOWN:
         if (all_raw == 0) {
-            ks_state = KS_IDLE;
+            ks_state = KS_IDLE;  /* glitch, back to idle */
         } else if ((g_tick_ms - ks_change_time) >= KEY_DEBOUNCE_MS) {
+            /* stable press confirmed */
             ks_stable     = all_raw;
-            ks_held_key   = raw_to_keycode(ks_stable);
+            ks_held_key   = raw_to_keycode(all_raw);
             ks_state      = KS_PRESSED;
             ks_change_time = g_tick_ms;
-            if (ks_held_key != KEY_NONE) {
+            if (ks_held_key != KEY_NONE)
                 KeyQueue_Push(ks_held_key, KEV_DOWN);
-            }
         }
         break;
 
     case KS_PRESSED:
         if (all_raw != ks_stable) {
             if (all_raw == 0) {
-                KeyQueue_Push(ks_held_key, KEV_UP);
-                ks_state = KS_IDLE;
+                /* all released → debounce the release */
+                ks_state       = KS_DEBOUNCE_UP;
+                ks_change_time = g_tick_ms;
             } else {
-                KeyQueue_Push(ks_held_key, KEV_UP);
-                ks_state = KS_DEBOUNCE_DOWN;
+                /* mask changed but not zero (e.g. second key pressed)
+                 * → re-debounce; do NOT push phantom KEV_UP */
+                ks_state       = KS_DEBOUNCE_DOWN;
                 ks_change_time = g_tick_ms;
             }
         } else if ((g_tick_ms - ks_change_time) >= KEY_LONG_MS) {
             KeyQueue_Push(ks_held_key, KEV_LONG);
-            ks_state = KS_LONG_PRESSED;
+            ks_state       = KS_LONG_PRESSED;
             ks_change_time = g_tick_ms;
         }
         break;
@@ -508,9 +515,10 @@ void Key_Scan(void)
     case KS_LONG_PRESSED:
         if (all_raw != ks_stable) {
             if (all_raw == 0) {
-                KeyQueue_Push(ks_held_key, KEV_UP);
-                ks_state = KS_IDLE;
+                ks_state       = KS_DEBOUNCE_UP;
+                ks_change_time = g_tick_ms;
             }
+            /* mask change but still held: ignore during long-press */
         } else if ((g_tick_ms - ks_change_time) >= KEY_REPEAT_MS) {
             KeyQueue_Push(ks_held_key, KEV_REPEAT);
             ks_change_time = g_tick_ms;
@@ -519,26 +527,15 @@ void Key_Scan(void)
 
     case KS_DEBOUNCE_UP:
         if (all_raw == 0 && (g_tick_ms - ks_change_time) >= KEY_DEBOUNCE_MS) {
+            /* release confirmed: push KEV_UP */
+            if (ks_held_key != KEY_NONE)
+                KeyQueue_Push(ks_held_key, KEV_UP);
             ks_state = KS_IDLE;
+        } else if (all_raw != 0) {
+            /* pressed again during release debounce → back to pressed */
+            ks_state = KS_PRESSED;
         }
         break;
-    }
-
-    /* USER1 / USER2 处理 */
-    if (user_raw != ks_user_prev) {
-        if ((user_raw & 0x01) && !(ks_user_prev & 0x01)) {
-            KeyQueue_Push(KEY_USER1, KEV_DOWN);
-        }
-        if (!(user_raw & 0x01) && (ks_user_prev & 0x01)) {
-            KeyQueue_Push(KEY_USER1, KEV_UP);
-        }
-        if ((user_raw & 0x02) && !(ks_user_prev & 0x02)) {
-            KeyQueue_Push(KEY_USER2, KEV_DOWN);
-        }
-        if (!(user_raw & 0x02) && (ks_user_prev & 0x02)) {
-            KeyQueue_Push(KEY_USER2, KEV_UP);
-        }
-        ks_user_prev = user_raw;
     }
 }
 
@@ -2203,11 +2200,6 @@ int main(void)
             if (Tick_TimedOut(last_key_scan, 10)) {
                 last_key_scan = g_tick_ms;
                 Key_Scan();
-                /* USER1 long-press detection */
-                if (g_user1_held && (g_tick_ms - g_user1_press_ms) >= KEY_LONG_MS) {
-                    KeyQueue_Push(KEY_USER1, KEV_LONG);
-                    g_user1_held = 0;
-                }
             }
 
             if (Tick_TimedOut(last_led_update, 100)) {
@@ -2403,16 +2395,10 @@ int main(void)
                         } else { g_alarm_slot_enabled_mask |= (1 << idx); was_on = 0; }
                         { char buf[32]; sprintf(buf, "*EVT:ALARM:SET %s %s\r\n", DOW_NAMES[idx + 1], was_on ? "OFF" : "ON"); UART_PutStrNB(buf); }
                         if (!(g_alarm_slot_enabled_mask & (1 << idx))) Alarm_Stop();
-                    } else if (kc == KEY_USER1 && ke == KEV_DOWN) {
-                        g_user1_held = 1;
-                        g_user1_press_ms = g_tick_ms;
-                    } else if (kc == KEY_USER1 && ke == KEV_UP) {
-                        g_user1_held = 0;
                     } else if (kc == KEY_USER1 && ke == KEV_LONG) {
                         /* Long-press USER1: display n.SY.xx
                          * 8-digit layout: [n][.][S][Y][.][x][x][ ]
                          * Dot at pos 1 & 4 as independent chars (FAQ Q12 style) */
-                        g_user1_held = 0;
                         {
                             char ntp_disp[9];
                             uint8_t hours;

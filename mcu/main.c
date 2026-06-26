@@ -1619,12 +1619,9 @@ void ProcessCommand(char *cmd)
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
-                g_dbg = 0x50;
                 t += strcspn(t, "0123456789");
-                g_dbg = 0x51;
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
-                g_dbg = 0x52;
                 wi++;
             }
 
@@ -1726,12 +1723,9 @@ void ProcessCommand(char *cmd)
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
-                g_dbg = 0x60;
                 t += strcspn(t, "0123456789");
-                g_dbg = 0x61;
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
-                g_dbg = 0x62;
                 wi++;
             }
 

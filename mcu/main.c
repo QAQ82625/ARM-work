@@ -727,8 +727,6 @@ void ExtractLine(void)
     }
 
     cmd_line[idx] = '\0';
-    g_dbg = (uint8_t)(0xE0 | (idx & 0x0F));
-    g_dbg_len = idx;
 
     if (idx >= LINE_MAX - 1 && uart_rx_tail != uart_rx_head) {
         while (uart_rx_tail != uart_rx_head) {

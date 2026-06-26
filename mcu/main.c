@@ -297,6 +297,7 @@ static uint8_t  beep_phase_on = 0;
 /* 远程蜂鸣（非阻塞） */
 static volatile uint8_t  remote_beep_active = 0;
 static volatile uint32_t remote_beep_end_ms = 0;
+static uint8_t  beep_kill_count;       /* 强制静音再确认次数 */
 
 /* 显示扫描静态变量 */
 static uint8_t  disp_cur_digit = 0;
@@ -1549,6 +1550,7 @@ void ProcessCommand(char *cmd)
             g_scroll_speed_level = 0;
             g_alarm_beep_active = 0;
             remote_beep_active  = 0;
+            beep_kill_count = 0;
             {
                 uint8_t ai;
                 for (ai = 0; ai < ALARM_SLOTS; ai++) {
@@ -2204,12 +2206,16 @@ int main(void)
                 }
             }
 
-            /* 远程蜂鸣（非阻塞，100ms检查一次） */
+            /* 远程蜂鸣 — 到期后连续3次(300ms)强制Beep_Off确保彻底静音 */
             if (remote_beep_active) {
                 if (g_tick_ms >= remote_beep_end_ms) {
                     remote_beep_active = 0;
-                    Beep_Off();
+                    beep_kill_count = 3;  /* 启动watchdog: 再清3次 */
                 }
+            }
+            if (beep_kill_count > 0) {
+                beep_kill_count--;
+                Beep_Off();
             }
 
             /* LED 接管 10s 自动退出 */
@@ -2289,7 +2295,7 @@ int main(void)
             /* Beep timeout guard — checked after every command */
             if (remote_beep_active && g_tick_ms >= remote_beep_end_ms) {
                 remote_beep_active = 0;
-                Beep_Off();
+                beep_kill_count = 3;
             }
         }
 

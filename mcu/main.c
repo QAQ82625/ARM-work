@@ -233,11 +233,6 @@ volatile uint8_t g_scroll_speed_level;
 volatile uint8_t g_weather_age;
 volatile uint8_t g_suppress_key_evt;
 
-/* Debug: marker set at each processing stage — inspect with Keil debugger if hung */
-volatile uint8_t  g_dbg;
-volatile uint8_t  g_dbg2;
-volatile uint16_t g_dbg_len;
-
 static key_event_t key_queue_evt[KEY_QUEUE_SIZE];
 static key_code_t  key_queue_code[KEY_QUEUE_SIZE];
 static volatile uint8_t key_queue_wr;
@@ -348,50 +343,32 @@ static const uint8_t days_in_month[] = {
 
 static const char *DOW_NAMES[] = {"","MON","TUE","WED","THU","FRI","SAT","SUN"};
 
-static uint8_t match_abbrev(const char *input, const char *full)
+static uint8_t cmd_match(const char *input, const char *prefix)
 {
-    while (*input && *full) {
-        char a = *input, b = *full;
-        if (a >= 'a' && a <= 'z') a -= 32;
-        if (b >= 'a' && b <= 'z') b -= 32;
-        if (a != b) return 0;
-        input++; full++;
-    }
-    if (*input) return 0;  /* input longer than full */
-    /* remaining full chars: uppercase = mandatory, lowercase = optional */
-    while (*full) {
-        if (*full >= 'A' && *full <= 'Z') return 0;
-        full++;
+    while (*prefix) {
+        if (*input != *prefix) return 0;
+        input++; prefix++;
     }
     return 1;
 }
 
-/* Case-insensitive keyword eat: if *pp starts with kw (any valid prefix),
- * advance pp past the matched chars + skip remaining kw-matching chars.
- * Returns 1 if matched, 0 otherwise. */
-static uint8_t eat_kw(char **pp, const char *kw)
+static void skip_kw_rest(char **pp, const char *rest)
 {
-    char *s = *pp;
-    const char *k = kw;
-    uint8_t matched = 0;
-    while (*s && *k) {
-        char a = *s, b = *k;
-        if (a >= 'a' && a <= 'z') a -= 32;
-        if (b >= 'a' && b <= 'z') b -= 32;
-        if (a != b) break;  /* prefix ended, stop comparing */
-        s++; k++;
-        matched = 1;
+    while (*rest && (**pp == *rest || **pp == *rest + 32)) {
+        (*pp)++; rest++;
     }
-    if (!matched) return 0;
-    while (*s && *k) {
-        char a = *s, b = *k;
-        if (a >= 'a' && a <= 'z') a -= 32;
-        if (b >= 'a' && b <= 'z') b -= 32;
-        if (a != b) break;
-        s++; k++;
+}
+
+static void str_rev(char *s)
+{
+    int len = (int)strlen(s);
+    int i;
+    char tmp;
+    for (i = 0; i < len / 2; i++) {
+        tmp = s[i];
+        s[i] = s[len - 1 - i];
+        s[len - 1 - i] = tmp;
     }
-    *pp = s;
-    return 1;
 }
 
 /* ================================================================
@@ -651,19 +628,15 @@ void UART_Init(uint32_t baud)
 
 static void UART_PutStr(const char *msg)
 {
-    const volatile char *m = (const volatile char *)msg;
-    while (*m) {
-        UARTCharPut(UART0_BASE, (char)*m);
-        m++;
+    while (*msg) {
+        UARTCharPut(UART0_BASE, *msg++);
     }
 }
 
 void UART_PutStrNB(const char *msg)
 {
-    const volatile char *m = (const volatile char *)msg;
-    while (*m) {
-        UARTCharPut(UART0_BASE, (char)*m);
-        m++;
+    while (*msg) {
+        UARTCharPut(UART0_BASE, *msg++);
     }
     led_uart_tx_active = 1;
 }
@@ -744,9 +717,6 @@ void ExtractLine(void)
         }
 
         if (!is_msg && ch == ' ') {
-            /* Normalize spaces: one space between tokens */
-            if (idx > 0 && cmd_line[idx-1] != ' ')
-                cmd_line[idx++] = ' ';
             continue;
         }
 
@@ -1495,35 +1465,38 @@ void Edit_HandleKey(key_code_t code, key_event_t evt)
     default: break;
     }
 }
-#define MATCH_CMD(tok, full, minlen) \
-    ((int)strlen(tok) >= (minlen) && strncmp(tok, full, (size_t)(minlen)) == 0)
-
-static char *skip_to_next(char *s)
-{
-    s += strcspn(s, " ");
-    s += strspn(s, " ");
-    return s;
-}
-
 void ProcessCommand(char *cmd)
 {
     char *p;
+    char resp[64];
 
     if (cmd[0] == '\0') return;
 
     /* *PING */
     if (strncmp(cmd, "*PING", 5) == 0) {
-        char resp[32];
         sprintf(resp, "*PONG %lu\r\n", g_uptime_s);
         UART_PutStrNB(resp);
         return;
     }
 
-    /* *RST [DATE|TIME|ALARM] */
+    /* *RST */
     if (strncmp(cmd, "*RST", 4) == 0) {
         p = cmd + 4;
-        p += strspn(p, " ");
-        if (*p == '\0') {
+        /* sub-reset: check for DATE/TIME/ALARM suffix */
+        if (cmd_match(p, "DATE") || cmd_match(p, "YEAR") || cmd_match(p, "MONTH")) {
+            g_date.y = 2026; g_date.m = 6; g_date.d = 8;
+        } else if (cmd_match(p, "TIME")) {
+            g_time.h = 0; g_time.mi = 0; g_time.s = 0;
+        } else if (cmd_match(p, "ALARM")) {
+            uint8_t ai;
+            for (ai = 0; ai < ALARM_SLOTS; ai++) {
+                g_alarm_slot[ai].h = 6;
+                g_alarm_slot[ai].mi = 0;
+                g_alarm_slot[ai].s = 0;
+            }
+            g_alarm_slot_enabled_mask = 0x1F;
+        } else {
+            /* full reset */
             g_time.h = 0; g_time.mi = 0; g_time.s = 0;
             g_date.y = 2026; g_date.m = 6; g_date.d = 15; g_date.wday = 1;
             g_format = FMT_LEFT;
@@ -1551,33 +1524,6 @@ void ProcessCommand(char *cmd)
                 }
             }
             g_alarm_slot_enabled_mask = 0x1F;
-        } else {
-            char  tok2[16];
-            int   pass;
-            int   word_len;
-
-            for (pass = 0; pass < 3; pass++) {
-                p += strspn(p, " ");
-                if (*p == '\0') break;
-                word_len = (int)strcspn(p, " ");
-                if (word_len >= 15) word_len = 15;
-                memcpy(tok2, p, (size_t)word_len);
-                tok2[word_len] = '\0';
-                p += word_len;
-                if (match_abbrev(tok2, "DATE") || match_abbrev(tok2, "YEAR") || match_abbrev(tok2, "MONTH"))
-                    { g_date.y = 2026; g_date.m = 6; g_date.d = 8; }
-                else if (match_abbrev(tok2, "TIME"))
-                    { g_time.h = 0; g_time.mi = 0; g_time.s = 0; }
-                else if (match_abbrev(tok2, "ALARM")) {
-                    uint8_t ai;
-                    for (ai = 0; ai < ALARM_SLOTS; ai++) {
-                        g_alarm_slot[ai].h = 6;
-                        g_alarm_slot[ai].mi = 0;
-                        g_alarm_slot[ai].s = 0;
-                    }
-                    g_alarm_slot_enabled_mask = 0x1F;
-                }
-            }
         }
         Clock_FormatDisplay();
         UART_PutStrNB("OK\r\n");
@@ -1587,217 +1533,228 @@ void ProcessCommand(char *cmd)
     /* *SET:... */
     if (strncmp(cmd, "*SET:", 5) == 0) {
         p = cmd + 5;
-        p += strspn(p, " ");  /* skip space between *SET: and sub-command */
 
-/* *SET:DATE - single-pass inline parser (no strtol/strcspn) */
-        if (MATCH_CMD(p, "DATE", 4)) {
-            int yr, mo, dy;
+        /* *SET:DATE */
+        if (cmd_match(p, "DATE")) {
+            uint8_t has_digit, dig_cnt;
             int v;
             uint8_t max_d;
-
-            yr = -1; mo = -1; dy = -1;
             p += 4;
-
+            skip_kw_rest(&p, "");
             while (*p) {
-                while (*p == ' ') p++;
-                if (!*p) break;
-                if (eat_kw(&p, "YEAR")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    yr = v;
-                } else if (eat_kw(&p, "MONTH")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (v < 1 || v > 12) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    mo = v;
-                } else if (eat_kw(&p, "DATE")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (v < 1 || v > 31) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    dy = v;
-                } else if (*p >= '0' && *p <= '9') {
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (yr < 0) yr = v; else if (mo < 0) mo = v; else if (dy < 0) dy = v;
+                if (cmd_match(p, "YEAR")) {
+                    p += 4;
+                    skip_kw_rest(&p, "");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 4) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        if (v >= 2025 && v <= 2099) g_date.y = (uint16_t)v;
+                        else { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                    }
+                } else if (cmd_match(p, "MONTH")) {
+                    p += 5;
+                    skip_kw_rest(&p, "");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        if (v < 1 || v > 12) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                        g_date.m = (uint8_t)v;
+                    }
+                } else if (cmd_match(p, "DATE")) {
+                    p += 4;
+                    skip_kw_rest(&p, "");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        max_d = days_in_month[g_date.m - 1];
+                        if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
+                        if (v < 1 || v > max_d) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                        g_date.d = (uint8_t)v;
+                    }
                 } else {
-                    UART_PutStrNB("ERROR SYNTAX\r\n"); return;
+                    if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z'))
+                        { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+                    break;
                 }
             }
-
-            if (yr < 0) yr = (int)g_date.y;
-            if (yr < 2025 || yr > 2099) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-            g_date.y = (uint16_t)yr;
-            if (mo >= 0) g_date.m = (uint8_t)mo;
-            if (dy >= 0) g_date.d = (uint8_t)dy;
-            max_d = days_in_month[g_date.m - 1];
-            if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
-            if (g_date.d > max_d) g_date.d = max_d;
+            {
+                uint32_t val;
+                val = g_date.y * 10000 + g_date.m * 100 + g_date.d;
+                sprintf(resp, "*EVT:EDIT DATE %lu\r\n", val);
+                UART_PutStrNB(resp);
+            }
             UART_PutStrNB("OK\r\n");
             return;
         }
 
-        /* *SET:TIME - single-pass inline parser (no strtol/strcspn) */
-        if (MATCH_CMD(p, "TIME", 4)) {
-            int h, m, s;
+        /* *SET:TIME */
+        if (cmd_match(p, "TIME")) {
+            uint8_t has_digit, dig_cnt;
             int v;
-
             p += 4;
-
-            /* Check for OFF */
-            { char *tp = p;
-              while (*tp == ' ') tp++;
-              if ((tp[0] == 'O' || tp[0] == 'o') &&
-                  (tp[1] == 'F' || tp[1] == 'f') &&
-                  (tp[2] == 'F' || tp[2] == 'f')) {
-                  disp_on = 0;
-                  UART_PutStrNB("OK\r\n"); return;
-              }
-            }
-
-            h = -1; m = -1; s = -1;
+            skip_kw_rest(&p, "");
             while (*p) {
-                while (*p == ' ') p++;
-                if (!*p) break;
-                if (eat_kw(&p, "HOUR")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (v > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    h = v;
-                } else if (eat_kw(&p, "MINUTE")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    m = v;
-                } else if (eat_kw(&p, "SECOND")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    s = v;
-                } else if (*p >= '0' && *p <= '9') {
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (h < 0) h = v; else if (m < 0) m = v; else if (s < 0) s = v;
+                if (cmd_match(p, "HOUR")) {
+                    p += 4;
+                    skip_kw_rest(&p, "");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        if (v > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                        g_time.h = (uint8_t)v;
+                    }
+                } else if (cmd_match(p, "MIN")) {
+                    p += 3;
+                    skip_kw_rest(&p, "UTE");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                        g_time.mi = (uint8_t)v;
+                    }
+                } else if (cmd_match(p, "SEC")) {
+                    p += 3;
+                    skip_kw_rest(&p, "OND");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                        g_time.s = (uint8_t)v;
+                    }
                 } else {
-                    UART_PutStrNB("ERROR SYNTAX\r\n"); return;
+                    if (cmd_match(p, "OFF")) {
+                        disp_on = 0;
+                        UART_PutStrNB("OK\r\n"); return;
+                    }
+                    if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z'))
+                        { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+                    break;
                 }
             }
-
-            if (h >= 0) g_time.h = (uint8_t)h;
-            if (m >= 0) { g_time.mi = (uint8_t)m; if (s < 0) g_time.s = 0; }
-            if (s >= 0) g_time.s = (uint8_t)s;
+            {
+                uint32_t val;
+                val = g_time.h * 10000 + g_time.mi * 100 + g_time.s;
+                sprintf(resp, "*EVT:EDIT TIME %lu\r\n", val);
+                UART_PutStrNB(resp);
+            }
             UART_PutStrNB("OK\r\n");
             return;
         }
 
-        /* *SET:ALARM - single-pass inline parser (no strtol/strcspn) */
-        if (MATCH_CMD(p, "ALARM", 5)) {
-            int h, m, s;
+        /* *SET:ALARM */
+        if (cmd_match(p, "ALARM")) {
+            uint8_t has_digit, dig_cnt;
             int v;
             int si, ss, se;
 
             p += 5;
+            skip_kw_rest(&p, "");
 
             ss = (int)ALARM_IDX;
             se = ss + 1;
 
-            /* Check ON/OFF */
-            { char *tp = p;
-              while (*tp == ' ') tp++;
-              if ((tp[0] == 'O' || tp[0] == 'o')) {
-                  if ((tp[1] == 'N' || tp[1] == 'n')) {
-                      for (si = ss; si < se; si++)
-                          g_alarm_slot_enabled_mask |= (1U << si);
-                      UART_PutStrNB("OK\r\n"); return;
-                  }
-                  if ((tp[1] == 'F' || tp[1] == 'f') &&
-                      (tp[2] == 'F' || tp[2] == 'f')) {
-                      for (si = ss; si < se; si++)
-                          g_alarm_slot_enabled_mask &= ~(1U << si);
-                      g_alarm_beep_active = 0;
-                      UART_PutStrNB("OK\r\n"); return;
-                  }
-              }
+            if (cmd_match(p, "OFF")) {
+                for (si = ss; si < se; si++)
+                    g_alarm_slot_enabled_mask &= ~(1U << si);
+                g_alarm_beep_active = 0;
+                UART_PutStrNB("OK\r\n"); return;
+            }
+            if (cmd_match(p, "ON")) {
+                for (si = ss; si < se; si++)
+                    g_alarm_slot_enabled_mask |= (1U << si);
+                UART_PutStrNB("OK\r\n"); return;
             }
 
-            h = -1; m = -1; s = -1;
             while (*p) {
-                while (*p == ' ') p++;
-                if (!*p) break;
-                if (eat_kw(&p, "HOUR")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (v > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    h = v;
-                } else if (eat_kw(&p, "MINUTE")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    m = v;
-                } else if (eat_kw(&p, "SECOND")) {
-                    while (*p == ' ') p++;
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
-                    s = v;
-                } else if (*p >= '0' && *p <= '9') {
-                    v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
-                    if (h < 0) h = v; else if (m < 0) m = v; else if (s < 0) s = v;
+                if (cmd_match(p, "HOUR")) {
+                    p += 4;
+                    skip_kw_rest(&p, "");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        if (v > 23) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                        for (si = ss; si < se; si++) {
+                            g_alarm_slot[si].h = (uint8_t)v;
+                            g_alarm_slot_enabled_mask |= (1U << si);
+                        }
+                    }
+                } else if (cmd_match(p, "MIN")) {
+                    p += 3;
+                    skip_kw_rest(&p, "UTE");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                        for (si = ss; si < se; si++) {
+                            g_alarm_slot[si].mi = (uint8_t)v;
+                            g_alarm_slot_enabled_mask |= (1U << si);
+                        }
+                    }
+                } else if (cmd_match(p, "SEC")) {
+                    p += 3;
+                    skip_kw_rest(&p, "OND");
+                    has_digit = (*p >= '0' && *p <= '9');
+                    if (has_digit) {
+                        v = 0; dig_cnt = 0;
+                        while (*p >= '0' && *p <= '9' && dig_cnt < 2) { v = v * 10 + (*p++ - '0'); dig_cnt++; }
+                        if (v > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
+                        for (si = ss; si < se; si++) {
+                            g_alarm_slot[si].s = (uint8_t)v;
+                            g_alarm_slot_enabled_mask |= (1U << si);
+                        }
+                    }
                 } else {
-                    UART_PutStrNB("ERROR SYNTAX\r\n"); return;
-                }
-            }
-
-            if (h >= 0) {
-                for (si = ss; si < se; si++) {
-                    g_alarm_slot[si].h = (uint8_t)h;
-                    g_alarm_slot_enabled_mask |= (1U << si);
-                }
-            }
-            if (m >= 0) {
-                for (si = ss; si < se; si++) {
-                    g_alarm_slot[si].mi = (uint8_t)m;
-                    g_alarm_slot_enabled_mask |= (1U << si);
-                }
-            }
-            if (s >= 0) {
-                for (si = ss; si < se; si++) {
-                    g_alarm_slot[si].s = (uint8_t)s;
-                    g_alarm_slot_enabled_mask |= (1U << si);
+                    if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z'))
+                        { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+                    break;
                 }
             }
             UART_PutStrNB("OK\r\n");
             return;
         }
+
         /* *SET:DISPlay ON/OFF */
-        if (MATCH_CMD(p, "DISPLAY", 4) || MATCH_CMD(p, "DISP", 4)) {
-            p = skip_to_next(p);
-            p += strspn(p, " ");
-            if (strncmp(p, "ON", 2) == 0 || strncmp(p, "on", 2) == 0)
-                { disp_on = 1; UART_PutStrNB("OK\r\n"); return; }
-            if (strncmp(p, "OFF", 3) == 0 || strncmp(p, "off", 3) == 0)
-                { disp_on = 0; UART_PutStrNB("OK\r\n"); return; }
+        if (cmd_match(p, "DISP")) {
+            p += 4;
+            skip_kw_rest(&p, "LAY");
+            if (cmd_match(p, "ON"))  { disp_on = 1; skip_kw_rest(&p, "");
+                                       UART_PutStrNB("OK\r\n"); return; }
+            if (cmd_match(p, "OFF")) { disp_on = 0; skip_kw_rest(&p, "");
+                                       UART_PutStrNB("OK\r\n"); return; }
             UART_PutStrNB("ERROR PARAM\r\n"); return;
         }
 
         /* *SET:FORMAT LEFT/RIGHT */
-        if (MATCH_CMD(p, "FORMAT", 6)) {
-            p = skip_to_next(p);
-            p += strspn(p, " ");
-            if (strncmp(p, "LEFT", 4) == 0)  { g_format = FMT_LEFT;  scroll_dir = 0; UART_PutStrNB("OK\r\n"); return; }
-            if (strncmp(p, "RIGHT", 5) == 0) { g_format = FMT_RIGHT; scroll_dir = 1; UART_PutStrNB("OK\r\n"); return; }
+        if (cmd_match(p, "FORMAT")) {
+            p += 6;
+            skip_kw_rest(&p, "");
+            if (cmd_match(p, "LEFT"))  { g_format = FMT_LEFT;  scroll_dir = 0; skip_kw_rest(&p, "");
+                                         UART_PutStrNB("OK\r\n"); return; }
+            if (cmd_match(p, "RIGHT")) { g_format = FMT_RIGHT; scroll_dir = 1; skip_kw_rest(&p, "");
+                                         UART_PutStrNB("OK\r\n"); return; }
             UART_PutStrNB("ERROR PARAM\r\n"); return;
         }
 
-        if (MATCH_CMD(p, "MSG", 3)) {
+        /* *SET:MSG */
+        if (cmd_match(p, "MSG")) {
             char   *msg_text;
             uint8_t len;
-
-            /* cmd_line for MSG preserves original case (is_msg=1 in ExtractLine) */
-            msg_text = p + 3;
-            msg_text += strspn(msg_text, " ");
+            p += 3;
+            skip_kw_rest(&p, "");
+            msg_text = p;
             if (*msg_text == '\0') { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
             len = (uint8_t)strlen(msg_text);
             if (len > 32) len = 32;
             memset(scroll_buf, 0, sizeof(scroll_buf));
             memcpy(scroll_buf, msg_text, len);
-
             scroll_len = len;
             scroll_off = 0;
             scroll_speed = 0;
@@ -1817,11 +1774,11 @@ void ProcessCommand(char *cmd)
         }
 
         /* *SET:BEEP 10-5000 */
-        if (MATCH_CMD(p, "BEEP", 4)) {
+        if (cmd_match(p, "BEEP")) {
             uint16_t ms;
-            p = skip_to_next(p);
-            p += strspn(p, " ");
-            ms = (uint16_t)atoi(p);
+            p += 4;
+            skip_kw_rest(&p, "");
+            { int vv = 0; while (*p >= '0' && *p <= '9') { vv = vv * 10 + (*p++ - '0'); } ms = (uint16_t)vv; }
             if (ms < 10 || ms > 5000) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
             remote_beep_active = 1;
             remote_beep_end_ms = g_tick_ms + ms;
@@ -1830,15 +1787,14 @@ void ProcessCommand(char *cmd)
         }
 
         /* *SET:LED <hex2> */
-        if (MATCH_CMD(p, "LED", 3)) {
-            char   *ep;
+        if (cmd_match(p, "LED")) {
             uint8_t val;
-            p = skip_to_next(p);
-            p += strspn(p, " ");
+            p += 3;
+            skip_kw_rest(&p, "");
             if (*p == '\0') { UART_PutStrNB("ERROR PARAM\r\n"); return; }
-            val = 0; ep = p;
+            val = 0;
             { int _hx = 0; while (_hx < 2) { _hx++;
-                char ch = *ep;
+                char ch = *p;
                 if (!((ch >= '0' && ch <= '9') ||
                       (ch >= 'A' && ch <= 'F') ||
                       (ch >= 'a' && ch <= 'f'))) break;
@@ -1846,31 +1802,30 @@ void ProcessCommand(char *cmd)
                 if      (ch >= '0' && ch <= '9') val |= (uint8_t)(ch - '0');
                 else if (ch >= 'A' && ch <= 'F') val |= (uint8_t)(ch - 'A' + 10);
                 else if (ch >= 'a' && ch <= 'f') val |= (uint8_t)(ch - 'a' + 10);
-                ep++;
+                p++;
             }}
-            if (ep == p) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
+            UART_PutStrNB("OK\r\n");
             g_led_value = val;
             g_led_override = (g_led_value != 0);
             if (g_led_override) led_override_start_ms = g_tick_ms;
-            UART_PutStrNB("OK\r\n");
             return;
         }
 
         /* *SET:KEY <NAME> */
-        if (MATCH_CMD(p, "KEY", 3)) {
-            p = skip_to_next(p);
-            p += strspn(p, " ");
+        if (cmd_match(p, "KEY")) {
             key_code_t kc = KEY_NONE;
-            if (strncmp(p, "FUNC", 4) == 0 || strncmp(p, "func", 4) == 0)   kc = KEY_FUNC;
-            else if (strncmp(p, "SHIFT", 5) == 0) kc = KEY_SHIFT;
-            else if (strncmp(p, "ADD", 3) == 0)    kc = KEY_ADD;
-            else if (strncmp(p, "SAVE", 4) == 0)   kc = KEY_SAVE;
-            else if (strncmp(p, "DISP", 4) == 0)   kc = KEY_DISP;
-            else if (strncmp(p, "SPEED", 5) == 0) kc = KEY_SPEED;
-            else if (strncmp(p, "FORMAT", 6) == 0) kc = KEY_FORMAT;
-            else if (strncmp(p, "EXT", 3) == 0)    kc = KEY_EXT;
-            else if (strncmp(p, "USER1", 5) == 0) kc = KEY_USER1;
-            else if (strncmp(p, "USER2", 5) == 0) kc = KEY_USER2;
+            p += 3;
+            skip_kw_rest(&p, "");
+            if (cmd_match(p, "FUNC"))   kc = KEY_FUNC;
+            else if (cmd_match(p, "SHIFT"))  kc = KEY_SHIFT;
+            else if (cmd_match(p, "ADD"))    kc = KEY_ADD;
+            else if (cmd_match(p, "SAVE"))   kc = KEY_SAVE;
+            else if (cmd_match(p, "DISP"))   kc = KEY_DISP;
+            else if (cmd_match(p, "SPEED"))  kc = KEY_SPEED;
+            else if (cmd_match(p, "FORMAT")) kc = KEY_FORMAT;
+            else if (cmd_match(p, "EXT"))    kc = KEY_EXT;
+            else if (cmd_match(p, "USER1"))  kc = KEY_USER1;
+            else if (cmd_match(p, "USER2"))  kc = KEY_USER2;
             if (kc == KEY_NONE) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
             g_suppress_key_evt = 1;
             KeyQueue_Push(kc, KEV_DOWN);
@@ -1879,33 +1834,30 @@ void ProcessCommand(char *cmd)
         }
 
         /* *SET:MODE DAY/NIGHT */
-        if (MATCH_CMD(p, "MODE", 4)) {
-            p = skip_to_next(p);
-            p += strspn(p, " ");
-            if (strncmp(p, "DAY", 3) == 0 || strncmp(p, "day", 3) == 0)
-                { g_night_mode = 0; g_mode_day = 1;
-                  UART_PutStrNB("*EVT:MODE DAY\r\nOK\r\n"); return; }
-            if (strncmp(p, "NIGHT", 5) == 0 || strncmp(p, "night", 5) == 0)
-                { g_night_mode = 1; g_mode_day = 0;
-                  UART_PutStrNB("*EVT:MODE NIGHT\r\nOK\r\n"); return; }
+        if (cmd_match(p, "MODE")) {
+            p += 4;
+            skip_kw_rest(&p, "");
+            if (cmd_match(p, "DAY"))   { g_night_mode = 0; g_mode_day = 1; skip_kw_rest(&p, "");
+                                         UART_PutStrNB("*EVT:MODE DAY\r\nOK\r\n"); return; }
+            if (cmd_match(p, "NIGHT")) { g_night_mode = 1; g_mode_day = 0; skip_kw_rest(&p, "");
+                                         UART_PutStrNB("*EVT:MODE NIGHT\r\nOK\r\n"); return; }
             UART_PutStrNB("ERROR PARAM\r\n"); return;
         }
 
         /* *SET:WEA <temp> <COND> */
-        if (MATCH_CMD(p, "WEA", 3)) {
-            p = skip_to_next(p);
-            p += strspn(p, " ");
-            int t = atoi(p);
+        if (cmd_match(p, "WEA")) {
+            int t;
+            p += 3;
+            skip_kw_rest(&p, "THER");
+            { t = 0; { int sign = 1; if (*p == '-') { sign = -1; p++; } while (*p >= '0' && *p <= '9') { t = t * 10 + (*p++ - '0'); } t *= sign; } }
             if (t < -40 || t > 50) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
             g_weather_temp = (int8_t)t;
-            p = skip_to_next(p);
-            p += strspn(p, " ");
-            if (match_abbrev(p, "SUN"))      strcpy(g_weather_cond, "SUN");
-            else if (match_abbrev(p, "CLD")) strcpy(g_weather_cond, "CLD");
-            else if (match_abbrev(p, "OVC")) strcpy(g_weather_cond, "OVC");
-            else if (match_abbrev(p, "RAI")) strcpy(g_weather_cond, "RAI");
-            else if (match_abbrev(p, "SNO")) strcpy(g_weather_cond, "SNO");
-            else if (match_abbrev(p, "FOG")) strcpy(g_weather_cond, "FOG");
+            if (cmd_match(p, "SUN"))      { strcpy(g_weather_cond, "SUN"); skip_kw_rest(&p, ""); }
+            else if (cmd_match(p, "CLD")) { strcpy(g_weather_cond, "CLD"); skip_kw_rest(&p, ""); }
+            else if (cmd_match(p, "OVC")) { strcpy(g_weather_cond, "OVC"); skip_kw_rest(&p, ""); }
+            else if (cmd_match(p, "RAI")) { strcpy(g_weather_cond, "RAI"); skip_kw_rest(&p, ""); }
+            else if (cmd_match(p, "SNO")) { strcpy(g_weather_cond, "SNO"); skip_kw_rest(&p, ""); }
+            else if (cmd_match(p, "FOG")) { strcpy(g_weather_cond, "FOG"); skip_kw_rest(&p, ""); }
             else { strcpy(g_weather_cond, "UNK"); }
             g_weather_valid = 1;
             g_weather_age = 0;
@@ -1914,24 +1866,23 @@ void ProcessCommand(char *cmd)
         }
 
         /* *SET:GAME START | SCORE nnn | OVER nnn | QUIT */
-        if (MATCH_CMD(p, "GAME", 4)) {
-            p = skip_to_next(p);
-            p += strspn(p, " ");
-            if (strncmp(p, "START", 5) == 0) {
+        if (cmd_match(p, "GAME")) {
+            p += 4;
+            skip_kw_rest(&p, "");
+            if (cmd_match(p, "START")) {
                 g_game_active = 1;
                 g_state = STATE_GAME;
                 Display_SetStr("--------", 0x00);
                 UART_PutStrNB("OK\r\n"); return;
             }
-            if (strncmp(p, "SCORE", 5) == 0) {
-                p = skip_to_next(p); p += strspn(p, " ");
-                g_game_score = (uint16_t)atoi(p);
+            if (cmd_match(p, "SCORE")) {
+                { int vv = 0; p += 5; skip_kw_rest(&p, ""); while (*p >= '0' && *p <= '9') { vv = vv * 10 + (*p++ - '0'); } g_game_score = (uint16_t)vv; }
                 { char buf[9]; sprintf(buf, "Sc %03d  ", g_game_score); Display_SetStr(buf, 0x00); }
                 UART_PutStrNB("OK\r\n"); return;
             }
-            if (strncmp(p, "OVER", 4) == 0) {
-                int i; p = skip_to_next(p); p += strspn(p, " ");
-                g_game_score = (uint16_t)atoi(p);
+            if (cmd_match(p, "OVER")) {
+                int i;
+                { int vv = 0; p += 4; skip_kw_rest(&p, ""); while (*p >= '0' && *p <= '9') { vv = vv * 10 + (*p++ - '0'); } g_game_score = (uint16_t)vv; }
                 { char buf[9]; sprintf(buf, "End%03d  ", g_game_score); Display_SetStr(buf, 0x00); }
                 for (i = 0; i < 2; i++) {
                     PCA9557_Write(0x00); { volatile int _z=600000; while(_z) _z--; }
@@ -1942,7 +1893,7 @@ void ProcessCommand(char *cmd)
                 Clock_FormatDisplay();
                 UART_PutStrNB("OK\r\n"); return;
             }
-            if (strncmp(p, "QUIT", 4) == 0) {
+            if (cmd_match(p, "QUIT")) {
                 g_game_active = 0;
                 g_state = STATE_CLOCK;
                 Clock_FormatDisplay();
@@ -1958,9 +1909,7 @@ void ProcessCommand(char *cmd)
     /* *GET:... */
     if (strncmp(cmd, "*GET:", 5) == 0) {
         p = cmd + 5;
-        p += strspn(p, " ");
-        if (*p == '\0' || match_abbrev(p, "TIME")) {
-            char resp[48];
+        if (*p == '\0' || cmd_match(p, "TIME")) {
             if (g_format == FMT_RIGHT) {
                 uint8_t rh = (g_time.h % 10) * 10 + (g_time.h / 10);
                 uint8_t rm = (g_time.mi % 10) * 10 + (g_time.mi / 10);
@@ -1972,8 +1921,7 @@ void ProcessCommand(char *cmd)
             UART_PutStrNB(resp);
             return;
         }
-        if (match_abbrev(p, "DATE")) {
-            char resp[48];
+        if (cmd_match(p, "DATE")) {
             if (g_format == FMT_RIGHT) {
                 uint8_t rd = (g_date.d % 10) * 10 + (g_date.d / 10);
                 uint8_t rm = (g_date.m % 10) * 10 + (g_date.m / 10);
@@ -1986,12 +1934,12 @@ void ProcessCommand(char *cmd)
             UART_PutStrNB(resp);
             return;
         }
-        if (match_abbrev(p, "FORMAT")) {
+        if (cmd_match(p, "FORMAT")) {
             UART_PutStrNB(g_format == FMT_LEFT ? "OK LEFT\r\n" : "OK RIGHT\r\n");
             return;
         }
-        if (match_abbrev(p, "ALARM")) {
-            char resp[160]; int off = 0;
+        if (cmd_match(p, "ALARM")) {
+            int off = 0;
             int si;
             off = sprintf(resp, "OK");
             for (si = 0; si < ALARM_SLOTS; si++) {
@@ -2004,16 +1952,12 @@ void ProcessCommand(char *cmd)
             UART_PutStrNB(resp);
             return;
         }
-        if (match_abbrev(p, "DISP")) {
+        if (cmd_match(p, "DISP")) {
             UART_PutStrNB(disp_on ? "OK ON\r\n" : "OK OFF\r\n");
             return;
         }
-        if (match_abbrev(p, "MODE")) {
+        if (cmd_match(p, "MODE")) {
             UART_PutStrNB(g_night_mode ? "OK NIGHT\r\n" : "OK DAY\r\n");
-            return;
-        }
-        if (match_abbrev(p, "SPEED")) {
-            UART_PutStrNB(g_scroll_speed_level ? "OK FAST\r\n" : "OK SLOW\r\n");
             return;
         }
         UART_PutStrNB("ERROR SYNTAX\r\n");
@@ -2033,7 +1977,6 @@ void ProcessCommand(char *cmd)
         sprintf(err, "ERROR '%s'\r\n", cmd);
         UART_PutStrNB(err);
     }
-    #undef MATCH_CMD
 }
 
 

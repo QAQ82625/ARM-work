@@ -1556,11 +1556,13 @@ void ProcessCommand(char *cmd)
                 else break;
             }
 
-            /* Pass 2: extract integers (inline, no strtol) */
+            /* Pass 2: extract integers (YEAR=4digits only if kmap&1, else all 2digits) */
             wi = 0;
             while (*p && wi < 3) {
                 if (*p >= '0' && *p <= '9') {
-                    int v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
+                    int v = 0; uint8_t dc = 0;
+                    uint8_t lim = ((wi == 0 && (kmap & 1)) ? 4 : 2);
+                    while (*p >= '0' && *p <= '9' && dc < lim) { v = v * 10 + (*p++ - '0'); dc++; }
                     vals[wi++] = v;
                 } else { p++; }
             }
@@ -1621,11 +1623,12 @@ void ProcessCommand(char *cmd)
                 else break;
             }
 
-            /* Pass 2: extract integers (inline, no strtol) */
+            /* Pass 2: extract integers (max 2 digits each, inline, no strtol) */
             wi = 0;
             while (*p && wi < 3) {
                 if (*p >= '0' && *p <= '9') {
-                    int v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
+                    int v = 0; uint8_t dc = 0;
+                    while (*p >= '0' && *p <= '9' && dc < 2) { v = v * 10 + (*p++ - '0'); dc++; }
                     vals[wi++] = v;
                 } else { p++; }
             }
@@ -1691,11 +1694,12 @@ void ProcessCommand(char *cmd)
                 else break;
             }
 
-            /* Pass 2: extract integers (inline, no strtol) */
+            /* Pass 2: extract integers (max 2 digits each, inline, no strtol) */
             wi = 0;
             while (*p && wi < 3) {
                 if (*p >= '0' && *p <= '9') {
-                    int v = 0; while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); }
+                    int v = 0; uint8_t dc = 0;
+                    while (*p >= '0' && *p <= '9' && dc < 2) { v = v * 10 + (*p++ - '0'); dc++; }
                     vals[wi++] = v;
                 } else { p++; }
             }

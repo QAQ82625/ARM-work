@@ -1622,6 +1622,7 @@ void ProcessCommand(char *cmd)
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
+                { volatile char **vp = (volatile char **)&t; (void)*vp; }
                 wi++;
             }
 
@@ -1726,6 +1727,7 @@ void ProcessCommand(char *cmd)
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
+                { volatile char **vp = (volatile char **)&t; (void)*vp; }
                 wi++;
             }
 
@@ -1836,6 +1838,7 @@ void ProcessCommand(char *cmd)
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
+                { volatile char **vp = (volatile char **)&t; (void)*vp; }
                 wi++;
             }
 

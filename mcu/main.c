@@ -1480,10 +1480,6 @@ void ProcessCommand(char *cmd)
 {
     char *p;
 
-    g_dbg = 0x10;
-    g_dbg_len = (uint16_t)strlen(cmd);
-    /* Verify null terminator: if cmd_line[idx] != 0, stack was corrupted */
-    g_dbg2 = (uint8_t)cmd[g_dbg_len];
     if (cmd[0] == '\0') return;
 
     /* *PING */
@@ -1496,11 +1492,9 @@ void ProcessCommand(char *cmd)
 
     /* *RST [DATE|TIME|ALARM] */
     if (strncmp(cmd, "*RST", 4) == 0) {
-        g_dbg = 0x11;
         p = cmd + 4;
         p += strspn(p, " ");
         if (*p == '\0') {
-            g_dbg = 0x12;
             g_time.h = 0; g_time.mi = 0; g_time.s = 0;
             g_date.y = 2026; g_date.m = 6; g_date.d = 15; g_date.wday = 1;
             g_format = FMT_LEFT;
@@ -1528,9 +1522,7 @@ void ProcessCommand(char *cmd)
                 }
             }
             g_alarm_slot_enabled_mask = 0x1F;
-            g_dbg = 0x13;
         } else {
-            g_dbg = 0x14;
             char  tok2[16];
             int   pass;
             int   word_len;
@@ -1558,23 +1550,18 @@ void ProcessCommand(char *cmd)
                 }
             }
         }
-        g_dbg = 0x15;
         Clock_FormatDisplay();
-        g_dbg = 0x16;
         UART_PutStrNB("OK\r\n");
-        g_dbg = 0x17;
         return;
     }
 
     /* *SET:... */
     if (strncmp(cmd, "*SET:", 5) == 0) {
-        g_dbg = 0x20;
         p = cmd + 5;
         p += strspn(p, " ");  /* skip space between *SET: and sub-command */
 
 /* *SET:DATE - 2-pass keyword-aware parser */
         if (MATCH_CMD(p, "DATE", 4)) {
-            g_dbg = 0x30;
             char  *t;
             char   wbuf[8];
             int    vals[3];
@@ -1590,7 +1577,6 @@ void ProcessCommand(char *cmd)
             t = (char *)(p + 4);
 
             /* Pass 1: scan keywords only - build kmap */
-            g_dbg = 0x31;
             kmap = 0;
             { int _p = 0; while (_p < 10) { _p++;
                 t += strspn(t, " ");
@@ -1600,7 +1586,6 @@ void ProcessCommand(char *cmd)
                 if (strspn(t, "0123456789") > 0) {
                     t += wlen;
                 } else {
-                    g_dbg = (uint8_t)(0xA0 | (wlen & 0x0F));
                     memcpy(wbuf, t, (size_t)wlen);
                     wbuf[wlen] = '\0';
                     t += wlen;
@@ -1614,20 +1599,16 @@ void ProcessCommand(char *cmd)
 
             /* Pass 2: extract all integers at once */
             t = (char *)(p + 4);
-            g_dbg = 0x32;
-            g_dbg_len = (uint16_t)(t - cmd);   /* DIAG: offset of t from cmd start */
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
-                { volatile char **vp = (volatile char **)&t; (void)*vp; }
                 wi++;
             }
 
             if (wi == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
-            g_dbg = 0x33;
 
             /* Map vals by kmap order, then fill remaining */
             yr_val = -1; mo_val = -1; dy_val = -1;
@@ -1656,22 +1637,12 @@ void ProcessCommand(char *cmd)
             max_d = days_in_month[g_date.m - 1];
             if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
             if (g_date.d > max_d) g_date.d = max_d;
-            {
-                char dbg_line[64];
-                sprintf(dbg_line, "*DBG D off=%u dbg=%02X kmap=%d v=%d,%d,%d\r\n",
-                        (unsigned int)g_dbg_len, (unsigned int)g_dbg,
-                        kmap, vals[0], vals[1], vals[2]);
-                UART_PutStrNB(dbg_line);
-            }
-            g_dbg = 0x34;
             UART_PutStrNB("OK\r\n");
-            g_dbg = 0x35;
             return;
         }
 
         /* *SET:TIME - 2-pass keyword-aware parser */
         if (MATCH_CMD(p, "TIME", 4)) {
-            g_dbg = 0x41;
             char  *t;
             char   wbuf[8];
             int    vals[3];
@@ -1694,7 +1665,6 @@ void ProcessCommand(char *cmd)
             }
 
             /* Pass 1: scan keywords */
-            g_dbg = 0x42;
             kmap = 0;
             { int _p = 0; while (_p < 10) { _p++;
                 t += strspn(t, " ");
@@ -1704,7 +1674,6 @@ void ProcessCommand(char *cmd)
                 if (strspn(t, "0123456789") > 0) {
                     t += wlen;
                 } else {
-                    g_dbg = (uint8_t)(0xA0 | (wlen & 0x0F));
                     memcpy(wbuf, t, (size_t)wlen);
                     wbuf[wlen] = '\0';
                     t += wlen;
@@ -1719,15 +1688,12 @@ void ProcessCommand(char *cmd)
             /* Pass 2: extract integers */
             t = (char *)(p + 4);
             t += strspn(t, " ");
-            g_dbg = 0x43;
-            g_dbg_len = (uint16_t)(t - cmd);   /* DIAG: offset of t from cmd start */
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
-                { volatile char **vp = (volatile char **)&t; (void)*vp; }
                 wi++;
             }
 
@@ -1757,16 +1723,7 @@ void ProcessCommand(char *cmd)
                 if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
                 g_time.s = (uint8_t)s_val;
             }
-            {
-                char dbg_line[64];
-                sprintf(dbg_line, "*DBG T off=%u dbg=%02X kmap=%d v=%d,%d,%d\r\n",
-                        (unsigned int)g_dbg_len, (unsigned int)g_dbg,
-                        kmap, vals[0], vals[1], vals[2]);
-                UART_PutStrNB(dbg_line);
-            }
-            g_dbg = 0x44;
             UART_PutStrNB("OK\r\n");
-            g_dbg = 0x45;
             return;
         }
 
@@ -1838,7 +1795,6 @@ void ProcessCommand(char *cmd)
                 t += strcspn(t, "0123456789");
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
-                { volatile char **vp = (volatile char **)&t; (void)*vp; }
                 wi++;
             }
 

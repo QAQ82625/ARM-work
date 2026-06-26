@@ -2183,9 +2183,9 @@ int main(void)
                     g_alarm_weather_beeps = 0;
                     g_alarm_weather_led = 0;
                 } else {
-                    uint8_t phase_in_cycle = (uint8_t)((elapsed / 300) & 0x01);
-                    if (phase_in_cycle != beep_phase_on) {
-                        beep_phase_on = phase_in_cycle;
+                    uint8_t should_be_on = ((elapsed % 600) < 300) ? 1 : 0;
+                    if (should_be_on != beep_phase_on) {
+                        beep_phase_on = should_be_on;
                         if (beep_phase_on) { Beep_On(); } else { Beep_Off(); }
                     }
                 }

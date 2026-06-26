@@ -564,12 +564,17 @@ void Key_Scan(void)
  * ================================================================ */
 static void Beep_On(void)
 {
+    GPIOPinConfigure(GPIO_PK5_M0PWM7);
+    GPIOPinTypePWM(GPIO_PORTK_BASE, GPIO_PIN_5);
     PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
 static void Beep_Off(void)
 {
     PWMGenDisable(PWM0_BASE, PWM_GEN_3);
+    /* 切GPIO强制拉低放电, 确保彻底静音 */
+    GPIOPinTypeGPIOOutput(GPIO_PORTK_BASE, GPIO_PIN_5);
+    GPIOPinWrite(GPIO_PORTK_BASE, GPIO_PIN_5, 0);
 }
 
 /* 闹钟相位切换用 — PWM始终运行, 只开关输出, 零延迟 */

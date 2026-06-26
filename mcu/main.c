@@ -1615,6 +1615,7 @@ void ProcessCommand(char *cmd)
             /* Pass 2: extract all integers at once */
             t = (char *)(p + 4);
             g_dbg = 0x32;
+            g_dbg_len = (uint16_t)(t - cmd);   /* DIAG: offset of t from cmd start */
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
@@ -1714,6 +1715,7 @@ void ProcessCommand(char *cmd)
             t = (char *)(p + 4);
             t += strspn(t, " ");
             g_dbg = 0x43;
+            g_dbg_len = (uint16_t)(t - cmd);   /* DIAG: offset of t from cmd start */
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {

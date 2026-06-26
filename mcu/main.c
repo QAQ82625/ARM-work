@@ -2273,8 +2273,7 @@ int main(void)
             rx_line_ready = 0;
             ExtractLine();
             /* Copy cmd_line to stack — isolate from any ISR/ring-buffer
-             * writes that could corrupt the global buffer mid-parse.
-             * If this fixes truncation → ISR race confirmed. */
+             * writes that could corrupt the global buffer mid-parse. */
             {
                 char cmd_copy[LINE_MAX];
                 int ci;
@@ -2285,6 +2284,12 @@ int main(void)
                 cmd_copy[LINE_MAX - 1] = '\0';
                 ProcessCommand(cmd_copy);
             }
+            /* Beep timeout guard — checked after every command */
+            if (remote_beep_active && g_tick_ms >= remote_beep_end_ms) {
+                remote_beep_active = 0;
+                Beep_Off();
+            }
+        }
         }
 
         /* 按键事件处理 */

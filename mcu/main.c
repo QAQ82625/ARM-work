@@ -1593,6 +1593,7 @@ void ProcessCommand(char *cmd)
                 if (strspn(t, "0123456789") > 0) {
                     t += wlen;
                 } else {
+                    g_dbg = (uint8_t)(0xA0 | (wlen & 0x0F));
                     memcpy(wbuf, t, (size_t)wlen);
                     wbuf[wlen] = '\0';
                     t += wlen;
@@ -1604,15 +1605,18 @@ void ProcessCommand(char *cmd)
             }
             }
 
-            g_dbg = 0x32;
             /* Pass 2: extract all integers at once */
             t = (char *)(p + 4);
+            g_dbg = 0x32;
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
+                g_dbg = 0x50;
                 t += strcspn(t, "0123456789");
+                g_dbg = 0x51;
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
+                g_dbg = 0x52;
                 wi++;
             }
 
@@ -1687,6 +1691,7 @@ void ProcessCommand(char *cmd)
                 if (strspn(t, "0123456789") > 0) {
                     t += wlen;
                 } else {
+                    g_dbg = (uint8_t)(0xA0 | (wlen & 0x0F));
                     memcpy(wbuf, t, (size_t)wlen);
                     wbuf[wlen] = '\0';
                     t += wlen;
@@ -1697,17 +1702,20 @@ void ProcessCommand(char *cmd)
                 }
             }
             }
-            g_dbg = 0x43;
 
             /* Pass 2: extract integers */
             t = (char *)(p + 4);
             t += strspn(t, " ");
+            g_dbg = 0x43;
             wi = 0;
             vals[0] = -1; vals[1] = -1; vals[2] = -1;
             while (wi < 3) {
+                g_dbg = 0x60;
                 t += strcspn(t, "0123456789");
+                g_dbg = 0x61;
                 if (!*t) break;
                 vals[wi] = (int)strtol(t, &t, 10);
+                g_dbg = 0x62;
                 wi++;
             }
 

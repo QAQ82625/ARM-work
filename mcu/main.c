@@ -2,7 +2,11 @@
  * 智能时钟系统 — MCU 端主程序
  * 基于 TM4C1294NCPDT (S800 板)
  * ARM Compiler 5 (C89) 兼容
+ *
+ * ARMCC5 V5.06 C89: optimization causes register-caching defects
+ * in large multi-path parsers. Disable for this compilation unit.
  */
+#pragma O0
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -1473,11 +1477,6 @@ static char *skip_to_next(char *s)
     return s;
 }
 
-/* ARMCC5 V5.06 C89: optimization causes register-caching defects
-   in this large multi-path parser. Disable optimization to force
-   every memory access through the stack — stable & correct. */
-#pragma push
-#pragma O0
 void ProcessCommand(char *cmd)
 {
     char *p;
@@ -2108,7 +2107,6 @@ void ProcessCommand(char *cmd)
     }
     #undef MATCH_CMD
 }
-#pragma pop
 
 
 static void Report_Display(void)

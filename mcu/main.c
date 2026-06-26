@@ -348,8 +348,13 @@ static uint8_t match_abbrev(const char *input, const char *full)
         if (a != b) return 0;
         input++; full++;
     }
-    /* prefix match: input must be fully consumed, full can have leftovers */
-    return (*input == 0);
+    if (*input) return 0;  /* input longer than full */
+    /* remaining full chars: uppercase = mandatory, lowercase = optional */
+    while (*full) {
+        if (*full >= 'A' && *full <= 'Z') return 0;
+        full++;
+    }
+    return 1;
 }
 
 /* ================================================================
@@ -1662,8 +1667,8 @@ void ProcessCommand(char *cmd)
                     wbuf[wlen] = '\0';
                     t += wlen;
                     if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
-                    else if (match_abbrev(wbuf, "MINUTE"))  kmap |= 2;
-                    else if (match_abbrev(wbuf, "SECOND"))  kmap |= 4;
+                    else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
+                    else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
                     else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
                 }
             }
@@ -1763,8 +1768,8 @@ void ProcessCommand(char *cmd)
                     wbuf[wlen] = '\0';
                     t += wlen;
                     if (match_abbrev(wbuf, "HOUR"))        kmap |= 1;
-                    else if (match_abbrev(wbuf, "MINUTE"))  kmap |= 2;
-                    else if (match_abbrev(wbuf, "SECOND"))  kmap |= 4;
+                    else if (match_abbrev(wbuf, "MINute"))  kmap |= 2;
+                    else if (match_abbrev(wbuf, "SECond"))  kmap |= 4;
                     else { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
                 }
             }

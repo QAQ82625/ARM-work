@@ -1176,20 +1176,20 @@ class VirtualTwinPanel(QMainWindow):
         QTimer.singleShot(200, lambda: self.send_cmd("*GET:DATE"))
 
     def _on_demo_abbrev(self):
-        """演示缩写语法: 仅大写字母必输, 小写可省略"""
+        """演示参数组合 + 缩写语法: MINute→MIN, SECond→SEC"""
         y = self.sp_year.value()
         m = self.sp_month.value()
         d = self.sp_day.value()
         fmt = self.combo_date_fmt.currentText()
-        # 构造缩写命令: 仅大写字母必输
+        # YEAR/MONTH/DATE 全大写不可缩写; MINUTE/SECOND 支持混合大小写
         abbrev_map = {
-            "YEAR MONTH DATE": f"*SET:DATE YE {y} MO {m} DA {d}",
-            "YEAR DATE":       f"*SET:DATE YE {y} DA {d}",
-            "MONTH DATE":      f"*SET:DATE MO {m} DA {d}",
-            "YEAR MONTH":      f"*SET:DATE YE {y} MO {m}",
+            "YEAR MONTH DATE": f"*SET:DATE YEAR {y} MONTH {m} DATE {d}",
+            "YEAR DATE":       f"*SET:DATE YEAR {y} DATE {d}",
+            "MONTH DATE":      f"*SET:DATE MONTH {m} DATE {d}",
+            "YEAR MONTH":      f"*SET:DATE YEAR {y} MONTH {m}",
         }
-        cmd = abbrev_map.get(fmt, f"*SET:DATE YE {y} MO {m} DA {d}")
-        self.log(f"缩写演示 [{fmt}]: {cmd}", "event")
+        cmd = abbrev_map.get(fmt, f"*SET:DATE YEAR {y} MONTH {m} DATE {d}")
+        self.log(f"参数组合 [{fmt}]: {cmd}", "event")
         self.send_cmd(cmd)
 
     def _on_fill_pc_time(self):

@@ -564,10 +564,21 @@ void Key_Scan(void)
  * ================================================================ */
 static void Beep_On(void)
 {
-    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
+    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
 static void Beep_Off(void)
+{
+    PWMGenDisable(PWM0_BASE, PWM_GEN_3);
+}
+
+/* 闹钟相位切换用 — PWM始终运行, 只开关输出, 零延迟 */
+static void Beep_OutOn(void)
+{
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
+}
+
+static void Beep_OutOff(void)
 {
     PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
 }
@@ -1137,8 +1148,8 @@ static void GPIO_Init(void)
                     PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
     PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, 8000);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 2000);
-    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
-    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
+    PWMGenDisable(PWM0_BASE, PWM_GEN_3);
 }
 
 static void I2C_Init(void)
@@ -2186,7 +2197,7 @@ int main(void)
                     uint8_t should_be_on = ((elapsed % 600) < 300) ? 1 : 0;
                     if (should_be_on != beep_phase_on) {
                         beep_phase_on = should_be_on;
-                        if (beep_phase_on) { Beep_On(); } else { Beep_Off(); }
+                        if (beep_phase_on) { Beep_OutOn(); } else { Beep_OutOff(); }
                     }
                 }
             }

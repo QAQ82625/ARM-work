@@ -1659,11 +1659,10 @@ void ProcessCommand(char *cmd)
             if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
             if (g_date.d > max_d) g_date.d = max_d;
             {
-                char dbg_line[48];
-                uint8_t last_dbg = g_dbg;
-                uint16_t offset = g_dbg_len;
-                sprintf(dbg_line, "*DBG D off=%u dbg=%02X\r\n",
-                        (unsigned int)offset, (unsigned int)last_dbg);
+                char dbg_line[64];
+                sprintf(dbg_line, "*DBG D off=%u dbg=%02X kmap=%d v=%d,%d,%d\r\n",
+                        (unsigned int)g_dbg_len, (unsigned int)g_dbg,
+                        kmap, vals[0], vals[1], vals[2]);
                 UART_PutStrNB(dbg_line);
             }
             g_dbg = 0x34;
@@ -1763,11 +1762,10 @@ void ProcessCommand(char *cmd)
                 g_time.s = (uint8_t)s_val;
             }
             {
-                char dbg_line[48];
-                uint8_t last_dbg = g_dbg;
-                uint16_t offset = g_dbg_len;
-                sprintf(dbg_line, "*DBG T off=%u dbg=%02X\r\n",
-                        (unsigned int)offset, (unsigned int)last_dbg);
+                char dbg_line[64];
+                sprintf(dbg_line, "*DBG T off=%u dbg=%02X kmap=%d v=%d,%d,%d\r\n",
+                        (unsigned int)g_dbg_len, (unsigned int)g_dbg,
+                        kmap, vals[0], vals[1], vals[2]);
                 UART_PutStrNB(dbg_line);
             }
             g_dbg = 0x44;

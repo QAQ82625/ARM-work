@@ -229,6 +229,9 @@ volatile uint8_t g_scroll_speed_level;
 volatile uint8_t g_weather_age;
 volatile uint8_t g_suppress_key_evt;
 
+/* Debug: marker set at each processing stage — inspect with Keil debugger if hung */
+volatile uint8_t g_dbg;
+
 static key_event_t key_queue_evt[KEY_QUEUE_SIZE];
 static key_code_t  key_queue_code[KEY_QUEUE_SIZE];
 static volatile uint8_t key_queue_wr;
@@ -614,17 +617,21 @@ void UART_Init(uint32_t baud)
 
 static void UART_PutStr(const char *msg)
 {
-    while (*msg) {
-        UARTCharPut(UART0_BASE, *msg++);
+    int i, n = (int)strlen(msg);
+    for (i = 0; i < n; i++) {
+        UARTCharPut(UART0_BASE, msg[i]);
     }
 }
 
 void UART_PutStrNB(const char *msg)
 {
-    while (*msg) {
+    int i, n = (int)strlen(msg);
+    g_dbg = 0xF0;
+    for (i = 0; i < n; i++) {
         /* 使用阻塞版本：等待 FIFO 有空间再写入，避免字符丢弃 */
-        UARTCharPut(UART0_BASE, *msg++);
+        UARTCharPut(UART0_BASE, msg[i]);
     }
+    g_dbg = 0xF1;
     led_uart_tx_active = 1;
 }
 
@@ -1469,6 +1476,7 @@ void ProcessCommand(char *cmd)
 {
     char *p;
 
+    g_dbg = 0x10;
     if (cmd[0] == '\0') return;
 
     /* *PING */
@@ -1481,9 +1489,11 @@ void ProcessCommand(char *cmd)
 
     /* *RST [DATE|TIME|ALARM] */
     if (strncmp(cmd, "*RST", 4) == 0) {
+        g_dbg = 0x11;
         p = cmd + 4;
         p += strspn(p, " ");
         if (*p == '\0') {
+            g_dbg = 0x12;
             g_time.h = 0; g_time.mi = 0; g_time.s = 0;
             g_date.y = 2026; g_date.m = 6; g_date.d = 15; g_date.wday = 1;
             g_format = FMT_LEFT;
@@ -1511,7 +1521,9 @@ void ProcessCommand(char *cmd)
                 }
             }
             g_alarm_slot_enabled_mask = 0x1F;
+            g_dbg = 0x13;
         } else {
+            g_dbg = 0x14;
             char  tok2[16];
             int   pass;
             int   word_len;
@@ -1539,18 +1551,23 @@ void ProcessCommand(char *cmd)
                 }
             }
         }
+        g_dbg = 0x15;
         Clock_FormatDisplay();
+        g_dbg = 0x16;
         UART_PutStrNB("OK\r\n");
+        g_dbg = 0x17;
         return;
     }
 
     /* *SET:... */
     if (strncmp(cmd, "*SET:", 5) == 0) {
+        g_dbg = 0x20;
         p = cmd + 5;
         p += strspn(p, " ");  /* skip space between *SET: and sub-command */
 
 /* *SET:DATE - 2-pass keyword-aware parser */
         if (MATCH_CMD(p, "DATE", 4)) {
+            g_dbg = 0x30;
             char  *t;
             char   wbuf[8];
             int    vals[3];
@@ -1566,6 +1583,7 @@ void ProcessCommand(char *cmd)
             t = (char *)(p + 4);
 
             /* Pass 1: scan keywords only - build kmap */
+            g_dbg = 0x31;
             kmap = 0;
             { int _p = 0; while (_p < 10) { _p++;
                 t += strspn(t, " ");
@@ -1586,6 +1604,7 @@ void ProcessCommand(char *cmd)
             }
             }
 
+            g_dbg = 0x32;
             /* Pass 2: extract all integers at once */
             t = (char *)(p + 4);
             wi = 0;
@@ -1598,6 +1617,7 @@ void ProcessCommand(char *cmd)
             }
 
             if (wi == 0) { UART_PutStrNB("ERROR SYNTAX\r\n"); return; }
+            g_dbg = 0x33;
 
             /* Map vals by kmap order, then fill remaining */
             yr_val = -1; mo_val = -1; dy_val = -1;
@@ -1626,12 +1646,15 @@ void ProcessCommand(char *cmd)
             max_d = days_in_month[g_date.m - 1];
             if (g_date.m == 2 && is_leap_year(g_date.y)) max_d = 29;
             if (g_date.d > max_d) g_date.d = max_d;
+            g_dbg = 0x34;
             UART_PutStrNB("OK\r\n");
+            g_dbg = 0x35;
             return;
         }
 
         /* *SET:TIME - 2-pass keyword-aware parser */
         if (MATCH_CMD(p, "TIME", 4)) {
+            g_dbg = 0x41;
             char  *t;
             char   wbuf[8];
             int    vals[3];
@@ -1654,6 +1677,7 @@ void ProcessCommand(char *cmd)
             }
 
             /* Pass 1: scan keywords */
+            g_dbg = 0x42;
             kmap = 0;
             { int _p = 0; while (_p < 10) { _p++;
                 t += strspn(t, " ");
@@ -1673,6 +1697,7 @@ void ProcessCommand(char *cmd)
                 }
             }
             }
+            g_dbg = 0x43;
 
             /* Pass 2: extract integers */
             t = (char *)(p + 4);
@@ -1712,7 +1737,9 @@ void ProcessCommand(char *cmd)
                 if (s_val > 59) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
                 g_time.s = (uint8_t)s_val;
             }
+            g_dbg = 0x44;
             UART_PutStrNB("OK\r\n");
+            g_dbg = 0x45;
             return;
         }
 
@@ -1896,14 +1923,17 @@ void ProcessCommand(char *cmd)
             p += strspn(p, " ");
             if (*p == '\0') { UART_PutStrNB("ERROR PARAM\r\n"); return; }
             val = 0; ep = p;
-            while (*ep) {
-                char ch = *ep; val <<= 4;
+            { int _hx = 0; while (_hx < 2) { _hx++;
+                char ch = *ep;
+                if (!((ch >= '0' && ch <= '9') ||
+                      (ch >= 'A' && ch <= 'F') ||
+                      (ch >= 'a' && ch <= 'f'))) break;
+                val <<= 4;
                 if      (ch >= '0' && ch <= '9') val |= (uint8_t)(ch - '0');
                 else if (ch >= 'A' && ch <= 'F') val |= (uint8_t)(ch - 'A' + 10);
                 else if (ch >= 'a' && ch <= 'f') val |= (uint8_t)(ch - 'a' + 10);
-                else break;
                 ep++;
-            }
+            }}
             if (ep == p) { UART_PutStrNB("ERROR PARAM\r\n"); return; }
             g_led_value = val;
             g_led_override = (g_led_value != 0);
@@ -2320,9 +2350,12 @@ int main(void)
 
         /* UART 行接收 */
         if (rx_line_ready) {
+            g_dbg = 0x01;
             rx_line_ready = 0;
             ExtractLine();
+            g_dbg = 0x02;
             ProcessCommand(cmd_line);
+            g_dbg = 0x03;
         }
 
         /* 按键事件处理 */

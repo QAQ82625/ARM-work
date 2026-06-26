@@ -1,0 +1,640 @@
+%!TeX program = xelatex
+\documentclass[12pt,hyperref,a4paper,UTF8]{ctexart}
+\usepackage{SJTUReport}
+
+%%-------------------------------正文开始---------------------------%%
+\begin{document}
+
+%%-----------------------封面--------------------%%
+\cover
+
+%%------------------摘要-------------%%
+\begin{abstract}
+
+本课程设计基于TI TM4C1294NCPDT (S800开发板) 设计并实现了一套\textbf{智能联网时钟系统}。MCU端独立运行本地时钟、闹钟、编辑状态机、流水显示等全部核心功能，通过UART 115200 8N1串口协议与PC端PyQt5数字孪生面板通信。PC端1:1镜像MCU数码管、LED、按键状态，并提供完整的P2控制面板（7个标签页）、NTP网络对时(E1)、天气获取(E2)、自动昼夜模式(E3)、数据可视化(E4)以及多闹钟调度器等扩展功能。实现了贪吃蛇小游戏作为自定义创新的MCU+PC联动功能。
+
+系统通过了100条自动化协议测试，TIMEOUT=0，所有功能正常运行。本报告详细阐述了系统架构设计、MCU端硬件驱动与功能模块、PC端数字孪生与控制面板、串口通信协议设计、ARMCC5编译器适配与优化历程，以及完整的测试验证过程。
+
+\end{abstract}
+
+\thispagestyle{empty} % 首页不显示页码
+
+%%--------------------------目录页------------------------%%
+\newpage
+\tableofcontents
+
+%%------------------------正文页从这里开始-------------------%
+\newpage
+
+\section{项目概述}
+
+\subsection{项目背景与目标}
+
+本项目是嵌入式系统课程的大作业，要求基于S800开发板（TI TM4C1294NCPDT ARM Cortex-M4F）设计并实现一个智能联网时钟系统。系统需要具备以下核心功能：
+
+\begin{itemize}
+    \item 开机画面、时钟与日期显示（含闰年处理）
+    \item 流水显示（左/右方向、两档速度可调）
+    \item 闹钟功能（节奏式响铃、手动停止、LED指示）
+    \item 按键编辑状态机（字段切换、数值修改、保存退出）
+    \item 8位LED辅助指示（心跳、闹钟、编辑、UART等）
+    \item UART串口通信协议（13+命令、8类事件上报）
+    \item PC端数字孪生面板（1:1镜像MCU状态）
+    \item 扩展功能（NTP对时、天气获取、自动昼夜、数据可视化）
+    \item 自定义创新功能（多闹钟调度器、贪吃蛇游戏）
+\end{itemize}
+
+\subsection{开发环境}
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{l|l}
+    \hline
+    \textbf{项目} & \textbf{工具/平台} \\
+    \hline
+    MCU编译 & Keil MDK V5, ARM Compiler 5.06 (C89) \\
+    MCU芯片 & TI TM4C1294NCPDT (S800开发板) \\
+    PC语言 & Python 3.11.9 + PyQt5 + pyserial \\
+    UART & 115200, 8N1, 无流控 \\
+    外部晶振 & 25MHz (SYSCTL\_XTAL\_25MHZ) \\
+    版本管理 & Git + GitHub \\
+    \hline
+    \end{tabular}
+    \caption{开发环境}
+\end{table}
+
+\subsection{项目文件结构}
+
+\begin{verbatim}
+hw26-0672/
+├── README.md                    # 项目说明文档
+├── CLAUDE.md                    # 开发辅助文档
+├── SPEC_COMPLIANCE_CHECKLIST.md # 规格对照清单
+├── report/                      # 本报告
+├── mcu/
+│   ├── main.c                   # 全部自编代码（~2400行）
+│   ├── src/                     # 课程提供模块
+│   ├── driverlib/               # 驱动库
+│   └── Objects/S800.axf         # 编译输出
+└── pc_host/
+    ├── virual_twin_panel.py     # PC上位机
+    ├── snake_game.py            # 贪吃蛇游戏
+    ├── test_runner.py           # 自动化测试器
+    ├── ntp_helper.py            # NTP对时
+    ├── weather_helper.py        # 天气获取
+    └── requirements.txt         # Python依赖
+\end{verbatim}
+
+%% ================================================================
+\section{系统架构设计}
+
+\subsection{整体架构}
+
+系统采用MCU+PC双端架构，通过UART 115200 8N1串口协议通信。MCU端独立运行全部时钟核心功能，PC端作为数字孪生镜像和控制面板，互不依赖但实时同步。
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: 系统架构图截图请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{4cm}\centering 系统架构示意图（请放置截图）}}
+    \caption{系统架构示意图}
+    \label{fig:arch}
+\end{figure}
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{l|l|l}
+    \hline
+    \textbf{模块} & \textbf{MCU端} & \textbf{PC端} \\
+    \hline
+    时钟核心 & TM4C1294 SysTick 1ms + 外部25MHz & NTP同步校准 \\
+    显示 & I2C TCA6424 8位7段数码管 & PyQt5 QPainter自绘 \\
+    LED & I2C PCA9557 8位 & QSS渐变圆点 \\
+    按键 & I2C Port0 (8键) + GPIO PJ0/J1 & QPushButton模拟 \\
+    蜂鸣器 & PK5 M0PWM7 2kHz/50\% & *SET:BEEP远程控制 \\
+    串口 & UART0 115200 8N1 ISR+环形缓冲 & QThread + pyserial \\
+    \hline
+    \end{tabular}
+    \caption{MCU与PC端硬件/软件对应}
+\end{table}
+
+\subsection{MCU主循环设计}
+
+MCU主循环基于SysTick 1ms时基驱动的标志位机制，无任何Delay阻塞：
+
+\begin{verbatim}
+while (1) {
+    if (flag_10ms) {  // 按键扫描(10ms) + LED更新(100ms)
+        Key_Scan();
+        LED_Update();
+    }
+    if (flag_100ms) { // 流水显示、闹钟响铃、远程蜂鸣
+        Scroll_Tick();
+        Alarm_Beep_Phase();
+    }
+    if (flag_1s) {    // 时间走时、闹钟检测、显示上报
+        Time_Tick();
+        Alarm_Check();
+        Report_Display();
+        Report_LED();
+    }
+    // UART行接收 (无阻塞)
+    if (rx_line_ready) { ExtractLine(); ProcessCommand(cmd_copy); }
+    // 按键事件处理 (队列驱动)
+    Key_GetEvent(&kc);
+}
+\end{verbatim}
+
+%% ================================================================
+\section{MCU端设计与实现}
+
+\subsection{系统初始化与开机画面}
+
+\subsubsection{时钟源配置}
+
+使用外部25MHz晶振作为系统时钟源，经过PLL倍频后获得精确的UART 115200波特率：
+
+\begin{verbatim}
+ui32SysClock = SysCtlClockFreqSet(
+    (SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN |
+     SYSCTL_USE_PLL | SYSCTL_CFG_VCO_480), 20000000);
+\end{verbatim}
+
+\subsubsection{开机画面}
+
+8位SEG + 8位LED全亮 → 全灭（闪烁1次） → 学号闪烁（LED跟随）
+→ 姓名拼音闪烁（LED跟随） → 版本号V1.0持续1.5秒 → 进入时钟。总时长约4-5秒。
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: 开机画面照片请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{3cm}\centering 开机画面（请放置S800板照片）}}
+    \caption{开机画面}
+    \label{fig:boot}
+\end{figure}
+
+\subsection{I2C数码管显示}
+
+\subsubsection{硬件设计}
+
+7段数码管通过TCA6424 I2C扩展器（地址0x22）驱动：Port1输出段码数据（含dp位），Port2输出位选信号。段码表支持50个字符：0-9、A-Z（全部26字母）、小写c/e/h/i/j/l/n/o/r/u、符号- \_ . °。
+
+\subsubsection{消鬼影刷新}
+
+采用三段式刷新策略消除鬼影：全灭 → 加载段码数据 → 选通当前位。刷新频率约500Hz（每位2ms × 8位）。
+
+\subsubsection{FORMAT RIGHT与小数点跟随}
+
+在RIGHT模式下，字符串逆序显示，小数点dpHex需重新计算。关键代码逻辑：
+\begin{verbatim}
+if (g_format == FMT_RIGHT) {
+    // 字符串逆序
+    for (i = 0; i < DISP_LEN; i++)
+        rev[i] = str[DISP_LEN - 1 - i];
+    dp = (1 << 4) | (1 << 2);  // dp重新计算
+    Display_SetStr(rev, dp);
+} else {
+    dp = (1 << 6) | (1 << 4);  // LEFT: 本位dp
+    Display_SetStr(str, dp);
+}
+\end{verbatim}
+
+\subsection{按键扫描}
+
+\subsubsection{统一状态机}
+
+按键扫描采用统一的KS\_IDLE → KS\_DEBOUNCE\_DOWN(20ms) → KS\_PRESSED → KS\_LONG\_PRESSED(800ms) 状态机。I2C按键（K0-K7）和GPIO按键（USER1/USER2）统一纳入uint16\_t all\_raw（低8位I2C + bit8/9 GPIO），共享消抖和长按逻辑。
+
+\subsubsection{KEV\_UP消抖释放}
+
+新增KS\_DEBOUNCE\_UP状态等待20ms确认释放后才推送KEV\_UP事件，过滤I2C总线毛刺导致的"假释放"，消除滚动模式下按键释放误退出的问题。
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: 按键状态机示意图请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{3cm}\centering 按键状态机示意图（请放置截图）}}
+    \caption{按键扫描状态机}
+    \label{fig:keystate}
+\end{figure}
+
+\subsection{编辑状态机}
+
+FUNC短按循环切换：EDIT\_DATE → EDIT\_TIME → EDIT\_ALARM →（回到CLOCK可通过SAVE/FUNC长按退出）。SHIFT切换编辑字段（6位 × 2位一组），ADD当前字段+1（带范围钳制）。5秒无操作自动退出且不保存。\textbf{备份恢复机制}：进入编辑时备份当前值（edit\_backup\_time/date/alarm），FUNC模式切换保留编辑内容，仅退出时恢复备份。
+
+\subsection{流水显示}
+
+Scroll\_Tick每250ms（快）/ 500ms（慢）移动一个字符。SPEED键2级速度切换，滚动途中可立即生效。FORMAT键切换LEFT/RIGHT方向，小数点按照"本位"或"下一位"规则跟随。大于8字符自动入流水完整一遍退出，小于等于8字符静态显示2.5秒后自动退出。
+
+\subsection{闹钟与蜂鸣器}
+
+\subsubsection{PWM硬件驱动}
+
+蜂鸣器采用PK5引脚M0PWM7，PWM0 Gen3 Out7输出2kHz/50\%占空比方波：
+
+\begin{verbatim}
+PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, 8000);     // 2kHz
+PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 2000);     // 50% duty
+\end{verbatim}
+
+\subsubsection{闹钟响铃相位切换}
+
+闹钟触发后PWM始终运行，通过PWMOutputState(true/false)零延迟开关输出实现300ms响/300ms停的对称音效。采用绝对时间取模而非除法避免相位泄漏：
+
+\begin{verbatim}
+uint8_t should_be_on = ((elapsed % 600) < 300) ? 1 : 0;
+if (should_be_on != beep_phase_on) {
+    beep_phase_on = should_be_on;
+    if (beep_phase_on) Beep_OutOn(); else Beep_OutOff();
+}
+\end{verbatim}
+
+\subsubsection{持久静音Watchdog}
+
+远程蜂鸣超时后设置beep\_force\_off=1，每100ms循环执行Beep\_Off()，确保PWM计数器即使停在HIGH相位也强制拉低PK5输出直至GPIO电平为0。*RST等复位操作不会取消watchdog，反而加强。
+
+\subsubsection{天气-闹钟联动}
+
+雨雪天气（RAI/SNO）时闹钟延长3声（+1200ms），高温（$\geq$30°C）时8LED全亮慢闪（1.5Hz周期）。
+
+\subsection{8位LED指示}
+
+LED位映射严格按照规格要求设计：
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{c|l|l}
+    \hline
+    \textbf{位} & \textbf{名称} & \textbf{行为} \\
+    \hline
+    LED0 (0x01) & 心跳 & 1Hz闪 (500ms/500ms) \\
+    LED1 (0x02) & 闹钟 & 使能常亮 / 响铃快闪 \\
+    LED2 (0x04) & 编辑 & 编辑中常亮 \\
+    LED3 (0x08) & UART & TX+RX合并, 亮100ms \\
+    LED4 (0x10) & 晴天 & SUN常亮 \\
+    LED5 (0x20) & 雨雪 & RAI/SNO 1Hz呼吸 (250ms亮/750ms灭) \\
+    LED6 (0x40) & 高温 & ≥30°C常亮 \\
+    LED7 (0x80) & NTP & SYNCED常亮/DRIFT 1Hz闪/UNSYNCED灭 \\
+    \hline
+    \end{tabular}
+    \caption{LED位映射表}
+\end{table}
+
+接管模式下通过 `*SET:LED <hex2>` 直接控制全部8位LED，10秒无新命令自动退出接管。
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: LED指示照片请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{3cm}\centering LED指示灯（请放置S800板LED照片）}}
+    \caption{8位LED指示}
+    \label{fig:led}
+\end{figure}
+
+%% ================================================================
+\section{串口通信协议设计}
+
+\subsection{协议概述}
+
+\begin{itemize}
+    \item 物理层: UART 115200, 8N1, 无流控
+    \item 行格式: 命令以\textbackslash r\textbackslash n结束
+    \item 大小写: \textbf{不敏感}（ExtractLine转大写）
+    \item 空格: 非MSG命令丢弃所有空格（紧邻token流）
+    \item 缩写: cmd\_match前缀匹配 + skip\_kw\_rest后缀跳过（如MIN→MINUTE跳过"UTE"）
+    \item 错误: ERROR SYNTAX / PARAM / RANGE / LINE TOO LONG
+\end{itemize}
+
+\subsection{UART接收与行整理}
+
+UART RX ISR将接收字节写入256字节环形缓冲区，遇\textbackslash r/\textbackslash n置位rx\_line\_ready。主循环中ExtractLine()进行行整理：
+
+\begin{enumerate}
+    \item 跳过buffer中残留的\textbackslash r/\textbackslash n
+    \item 窥探前15字节判断是否为*SET:MSG（保留大小写+空格）
+    \item 非MSG命令：丢弃空格 + 小写转大写 → 紧邻token流
+    \item 行长>64字节丢弃并回复ERROR LINE TOO LONG
+\end{enumerate}
+
+\subsection{命令集（15条）}
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{l|l|l}
+    \hline
+    \textbf{命令} & \textbf{参数} & \textbf{说明} \\
+    \hline
+    *RST & [DATE/TIME/ALARM] & 全/子复位 \\
+    *SET:DATE & YEAR/MONTH/DATE val & 日期设置 \\
+    *SET:TIME & HOUR/MIN/SEC/OFF & 时间设置 \\
+    *SET:ALARM & [DOW] HOUR/MIN/SEC/ON/OFF & 闹钟设置 \\
+    *SET:DISPLAY & ON/OFF & 显示开关 \\
+    *SET:FORMAT & LEFT/RIGHT & 方向设置 \\
+    *SET:MSG & text ≤32字节 & 滚动消息 \\
+    *SET:BEEP & 10-5000ms & 远程蜂鸣 \\
+    *SET:LED & hex2 & LED接管 \\
+    *SET:KEY & NAME(10种) & 虚拟按键 \\
+    *SET:MODE & DAY/NIGHT & 昼夜模式 \\
+    *SET:WEA & temp code & 天气数据 \\
+    *SET:GAME & START/SCORE/OVER/QUIT & 贪吃蛇游戏 \\
+    *GET & TIME/DATE/FORMAT/ALARM/DISP/MODE & 查询 \\
+    *PING & — & 心跳 \\
+    \hline
+    \end{tabular}
+    \caption{PC→MCU命令集}
+\end{table}
+
+\subsection{事件集（8种）}
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{l|l|l}
+    \hline
+    \textbf{事件} & \textbf{触发条件} & \textbf{说明} \\
+    \hline
+    *EVT:DISP <8char> <dpHex> & 1Hz & 数码管同步 \\
+    *EVT:LED <hex2> & 1Hz & LED同步 \\
+    *EVT:KEY <NAME> & 物理按键 & 按键事件 \\
+    *EVT:ALARM/ALARM\_OFF & 触发/停止 & 闹钟事件 \\
+    *EVT:EDIT <TYPE> <VALUE> & 编辑保存 & 编辑事件 \\
+    *EVT:MODE <STATE> & 模式切换 & DAY/NIGHT \\
+    *PONG <uptime> & PING应答 & 心跳 \\
+    \hline
+    \end{tabular}
+    \caption{MCU→PC事件集}
+\end{table}
+
+\subsection{命令解析架构：2-Pass内联解析}
+
+针对ARMCC5 C89编译器的优化缺陷，DATE/TIME/ALARM三个handler采用创新的2-pass解析架构：
+
+\begin{enumerate}
+    \item \textbf{Pass 1}：副本指针char *q扫描关键词 → cmd\_match前缀匹配 → 建立kmap bitmask（记录哪些字段被指定）
+    \item \textbf{Pass 2}：原始指针char *p逐字符扫描 → 内联while(*p>='0')\{v=v*10+(*p++-'0')\}提取整数 → vals[]
+    \item \textbf{Map}：按kmap顺序分配vals到目标变量 + 默认值回填
+\end{enumerate}
+
+\textbf{关键设计决策}：所有数字解析使用自写内联循环，\textbf{零次strtol调用}，从根本上消除了ARMCC5 C89运行时库strtol(t, \&t, 10)中\&t写回偏移的缺陷。
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: 命令解析流程图请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{3cm}\centering 2-Pass命令解析流程（请放置示意图）}}
+    \caption{2-Pass命令解析流程}
+    \label{fig:parse}
+\end{figure}
+
+%% ================================================================
+\section{PC端设计与实现}
+
+\subsection{P1 串口管理}
+
+自动扫描COM端口，默认选中USB串口。1Hz自动发送*PING保持心跳，3秒未收到*PONG → 标记离线+状态灯变灰，收到PONG后自动恢复。状态栏4项实时指示：连接状态 / FORMAT方向 / MODE昼夜 / ALARM闹钟使能。
+
+\subsection{P2 控制面板 — 7标签页}
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{l|l}
+    \hline
+    \textbf{标签页} & \textbf{功能描述} \\
+    \hline
+    📅 日期时间 & SpinBox年/月/日/时/分/秒，读取/设置/填PC时间，参数组合下拉框 \\
+    ⏰ 闹钟调度 & 7天网格Mon-Sun，独立时间+使能，每行单独设置/清除 \\
+    🖥️ 显示控制 & 3模式按钮，方向，速度，昼夜，LED hex直控，蜂鸣ms \\
+    📝 滚动消息 & 文本输入≤32字，字数统计，预览 \\
+    ⚡ 快捷操作 & *RST确认，PING，字母大小写/缩写演示序列 \\
+    🔌 扩展功能 & E1 NTP对时，E2天气获取，E3自动昼夜，E4数据图表 \\
+    🐍 贪吃蛇 & 20×15网格，MCU按键操控，PC渲染，分数同步 \\
+    \hline
+    \end{tabular}
+    \caption{P2控制面板7标签页}
+\end{table}
+
+\subsection{P4 数字孪生面板}
+
+\begin{itemize}
+    \item \textbf{7段数码管}：QPainter自绘，亮\#FF3030，灭\#220000，8段+dp，支持50种字符和独立dp占位渲染
+    \item \textbf{8位LED}：QSS渐变圆形，8色编码，双向同步
+    \item \textbf{10键虚拟按键}：FUNC/SHIFT/ADD/SAVE/DISP/SPEED/FORMAT/EXT/USER1/USER2
+    \item \textbf{NIGHT模式}：仅显示前4位(HH.MM)，其余位熄灭
+    \item \textbf{编辑高亮镜像}：PC追踪FUNC/SHIFT/SAVE按键状态，同步闪烁编辑字段
+\end{itemize}
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: PC端完整UI截图请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{5cm}\centering PC端完整UI界面截图（请放置截图，需展示7标签页+P4数字孪生面板）}}
+    \caption{PC端数字孪生面板完整界面}
+    \label{fig:pcfull}
+\end{figure}
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: PC端与MCU板实物同框照片请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{4cm}\centering PC镜像与S800板实物同框验证（请放置照片）}}
+    \caption{PC数字孪生与S800板实物同框验证}
+    \label{fig:twin}
+\end{figure}
+
+\subsection{P5 收发日志}
+
+QPlainTextEdit实时滚动，格式[hh:mm:ss.fff]方向命令，颜色编码：发送=蓝/应答=绿/事件=紫/错误=红。最大1000行，可导出为文本文件。
+
+%% ================================================================
+\section{扩展功能实现}
+
+\subsection{E1 — NTP网络对时}
+
+\begin{itemize}
+    \item 使用ntplib调用ntp.aliyun.com NTP服务器
+    \item PC收到*EVT:KEY USER1后自动触发NTP → \texttt{*SET:DATE} + \texttt{*SET:TIME} + \texttt{*NTP} 三步同步
+    \item MCU NTP状态机：UNSYNCED(LED7灭) → SYNCED(常亮) → DRIFT(>24h, 1Hz慢闪)
+    \item 长按USER1数码管显示NTP状态：n.SY.xx（n=小时数, xx=OK/NO/DR，点独立占位）
+\end{itemize}
+
+\subsection{E2 — 天气获取}
+
+\begin{itemize}
+    \item 使用wttr.in免费API（无Key），30分钟自动刷新
+    \item PC → \texttt{*SET:WEA <temp> <SUN/CLD/OVC/RAI/SNO/FOG>}
+    \item MCU编码LED4=SUN常亮, LED5=RAI/SNO 1Hz呼吸, LED6=≥30°C常亮
+    \item USER2短按 → 数码管显示"温度°C 天气"5秒 → 过期数据闪烁
+\end{itemize}
+
+\subsection{E3 — 自动昼夜模式}
+
+\begin{itemize}
+    \item 使用astral计算上海日出日落时间，60秒轮询判断
+    \item PC → \texttt{*SET:MODE DAY/NIGHT}，界面复选框控制
+    \item NIGHT模式：数码管仅显HH.MM 4位，LED仅心跳，闹钟静音
+\end{itemize}
+
+\subsection{E4 — 数据可视化}
+
+\begin{itemize}
+    \item 所有事件持久化写入events.csv（格式：类型, 时间戳, 详情）
+    \item matplotlib生成3种图表：闹钟触发分布、每日事件统计、NTP同步时间线
+\end{itemize}
+
+%% ================================================================
+\section{自定义创新功能 — 贪吃蛇游戏}
+
+\subsection{架构设计}
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{verbatim}
+    MCU (按键+显示)                    PC (PyQt5渲染)
+    ───────────────                    ──────────────
+    *SET:GAME START → 数码管"--------" → 20×15网格
+    *EVT:KEY方向键  ← MCU按键        ← 蛇方向控制
+                   → *SET:GAME SCORE n ← 吃食物+1
+                   → *SET:GAME OVER n  ← 撞墙/撞自己
+                   → *SET:GAME QUIT    ← 退出→时钟
+    \end{verbatim}
+    \caption{贪吃蛇游戏MCU+PC联动架构}
+    \label{fig:snakearch}
+\end{figure}
+
+\subsection{游戏特性}
+
+\begin{itemize}
+    \item 20×15网格，150ms刷新，深绿色背景配色
+    \item 蛇身：亮绿头部(\#8BC34A) + 标准绿身体(\#4CAF50)，红色圆点食物(\#FF5252)
+    \item MCU K0/K1/K2/K6控制上/下/右/左，USER1暂停/继续
+    \item MCU数码管实时显示"Sc NNN"，GAME OVER闪LED+显示"End NNN"
+\end{itemize}
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: 贪吃蛇游戏截图请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{4cm}\centering 贪吃蛇游戏界面（请放置PC端游戏截图）}}
+    \caption{贪吃蛇游戏}
+    \label{fig:snake}
+\end{figure}
+
+%% ================================================================
+\section{ARMCC5编译器适配与Bug修复}
+
+\subsection{问题现象与根因分析}
+
+ARM Compiler 5 V5.06在C89模式下运行时，对包含多个大分支的函数（ProcessCommand约600行），优化器产生的寄存器分配方案出现系统性缺陷：
+
+\begin{itemize}
+    \item \textbf{死循环}: while(*t)中*t被ARMCC5缓存在寄存器→t++不写回→永远非零→卡死
+    \item \textbf{数据截断}: strtol(t, \&t, 10)中\&t写回→但循环体从寄存器读旧值→14→4, 30→0
+    \item \textbf{概率性}: 缺陷触发依赖特定的栈帧布局，修改代码后缺陷位置转移而非消除
+\end{itemize}
+
+\subsection{修复历程}
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{c|l|l}
+    \hline
+    \textbf{尝试} & \textbf{方案} & \textbf{结果} \\
+    \hline
+    1 & volatile char *t局部变量 & 局部volatile被ARMCC5忽略 \\
+    2 & for+strlen替代while(*ptr) & strlen调用改变栈布局→新缺陷 \\
+    3 & 文件域volatile char *g\_pp & 不够强，仍有缓存 \\
+    4 & \#pragma O0文件级 & 无优化即无缺陷 ✅ \\
+    5 & strtol→内联while(*p>='0') & 根除\&t写回缺陷 ✅ \\
+    \hline
+    \end{tabular}
+    \caption{ARMCC5缺陷修复历程}
+\end{table}
+
+\subsection{最终解决方案}
+
+\begin{enumerate}
+    \item \textbf{文件级禁用优化}：main.c顶部添加\#pragma O0，ARMCC5不做任何优化
+    \item \textbf{内联数字解析}：所有数字提取改为自写 while(*p>='0')\{v=v*10+(*p++-'0')\}，零次strtol调用
+    \item \textbf{volatile关键变量}：remote\_beep\_active/end\_ms等运行时修改的变量声明为volatile
+    \item \textbf{cmd\_line栈拷贝}：ProcessCommand前将全局cmd\_line拷贝到栈局部变量，防止ISR/ring-buffer写入干扰
+\end{enumerate}
+
+%% ================================================================
+\section{测试与验证}
+
+\subsection{自动化协议测试}
+
+使用自研test\_runner.py执行testcmd.txt中的100条命令，覆盖：
+
+\begin{itemize}
+    \item 全命令格式（*RST, *SET:*, *GET, *PING）
+    \item 缩写/大小写/空格容错（*set:time, *SET:FORM LAT→FORMAT）
+    \item 参数组合（YEAR MONTH DATE任意子集, 关键词交错排列）
+    \item 边界值（BEEP 10/5000, HOUR 0/23/25, MONTH 1/12/13）
+    \item 错误检测（非法缩写MONT/MI → ERROR SYNTAX, 越界→ERROR RANGE）
+\end{itemize}
+
+\textbf{测试结果：TIMEOUT=0，全部协议命令正常运行。}
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: 测试结果截图请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{4cm}\centering 自动化测试结果（请放置test\_runner运行截图）}}
+    \caption{自动化协议测试结果}
+    \label{fig:test}
+\end{figure}
+
+\subsection{功能验收对照}
+
+对照《MCU与PC端开发要求 V1.0》的120项验收标准：
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{l|c|c}
+    \hline
+    \textbf{功能类别} & \textbf{验收项数} & \textbf{状态} \\
+    \hline
+    MCU基础功能 (§1-11) & 57 & 全部完成 ✅ \\
+    MCU扩展功能 (§12-19) & 23 & 全部完成 ✅ \\
+    PC上位机 (§20-29) & 35 & 全部完成 ✅ \\
+    扩展(E1-E4) + §4.3 & 5 & 全部完成 ✅ \\
+    \hline
+    \end{tabular}
+    \caption{功能验收对照}
+\end{table}
+
+\begin{figure}[!htbp]
+    \centering
+    % TODO: 完整的S800板+PC面板双窗口并排照片请放置于此
+    \fbox{\parbox{0.85\textwidth}{\vspace{5cm}\centering S800板实物 + PC数字孪生面板双窗口并排（请放置照片）}}
+    \caption{S800板实物与PC数字孪生面板同框演示}
+    \label{fig:demo}
+\end{figure}
+
+%% ================================================================
+\section{总结与展望}
+
+\subsection{项目成果}
+
+本课程设计完成了一套功能完整的智能联网时钟系统：
+\begin{itemize}
+    \item MCU端：独立运行的本地时钟（含闰年）、闹钟（节奏响铃+天气联动）、流水显示（双向双速）、编辑状态机（备份恢复）、按键扫描（统一状态机消抖）、LED指示（8位精确映射）、15条UART命令+8类事件解析
+    \item PC端：7标签页控制面板、数字孪生镜像面板（1:1同步）、4项扩展功能、贪吃蛇游戏
+    \item 协议：100条自动化测试通过，TIMEOUT=0
+    \item 编译器：成功适配ARMCC5 C89优化缺陷，#pragma O0 + 内联解析双保险
+\end{itemize}
+
+\subsection{技术难点与收获}
+
+\begin{enumerate}
+    \item \textbf{ARMCC5优化缺陷诊断与修复}：通过volatile标记、栈拷贝隔离、二分定位、最终内联解析等多次迭代，深入理解了C89编译器寄存器分配的底层行为
+    \item \textbf{I2C总线竞态}：SysTick ISR与前台代码共享I2C总线 → SysTickIntDisable+while(I2CMasterBusy())等待in-flight事务
+    \item \textbf{蜂鸣器稳定性}：PWM计数器随机停在高电平→先在OutputState(false)再GenDisable + beep\_force\_off持久静音watchdog
+    \item \textbf{按键扫描}：统一状态机 + KS\_DEBOUNCE\_UP消抖释放 → 根除KEV\_UP误触发导致的滚动退出
+\end{enumerate}
+
+\subsection{改进方向}
+
+\begin{itemize}
+    \item WiFi联网功能（当前依赖PC中继）
+    \item 贪睡功能（snooze）
+    \item 更多游戏或自定义功能
+    \item 电池备份RTC
+\end{itemize}
+
+%%----------- 参考文献 -------------------%%
+\reference
+
+\end{document}

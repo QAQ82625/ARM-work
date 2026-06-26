@@ -1,0 +1,139 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%SJTU课程论文模板
+%%作者：Jiazhen-Lei
+%%GitHub：https://github.com/Jiazhen-Lei/SJTU_Course_Template_Latex
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%在"中国科学院大学课程论文模板"基础上修改而来
+%%原作者：jweihe
+%%GitHub：https://github.com/jweihe/UCAS_Latex_Template
+
+%%在"北京大学课程论文模板"基础上修改而来
+%%原作者：Shawn Wang
+
+%%在"西北工业大学课程论文模板"基础上修改而来
+%%原作者：SeddonShen
+
+\ProvidesPackage{SJTUReport}
+
+%%页边距
+\RequirePackage[left=2.50cm, right=2.50cm, top=2.50cm, bottom=2.50cm]{geometry}
+
+%%一些必要的宏包
+\RequirePackage[unicode=true,colorlinks,urlcolor=blue,linkcolor=blue,bookmarksnumbered=blue]{hyperref}
+\RequirePackage{latexsym,amssymb,amsmath,amsbsy,amsopn,amstext,amsthm,amsxtra,color,bm,calc,ifpdf}
+\RequirePackage{graphicx}
+\RequirePackage{enumerate}
+\RequirePackage{fancyhdr}
+\RequirePackage{listings}
+\RequirePackage{multirow}
+\RequirePackage{makeidx}
+\RequirePackage{xcolor}
+\RequirePackage{fontspec}
+\RequirePackage{subfigure}
+\PassOptionsToPackage{hyphens}{url}
+\RequirePackage{hyperref}
+\RequirePackage{pythonhighlight}
+
+\RequirePackage{tcolorbox}
+
+\RequirePackage{fontawesome}
+
+%% 更改摘要二字的样式
+\renewcommand{\abstractname}{\textbf{\large {摘\quad 要}}}
+
+%可固定下划线长度
+\makeatletter
+\newcommand\dlmu[2][4cm]{\hskip1pt\underline{\hb@xt@ #1{\hss#2\hss}}\hskip3pt}
+\makeatother
+
+%%对一些autoref的中文引用名作修改
+\def\equationautorefname{式}
+\def\footnoteautorefname{脚注}
+\def\itemautorefname{项}
+\def\figureautorefname{图}
+\def\tableautorefname{表}
+\def\partautorefname{篇}
+\def\appendixautorefname{附录}
+\def\chapterautorefname{章}
+\def\sectionautorefname{节}
+\def\subsectionautorefname{小节}
+\def\subsubsectionautorefname{subsubsection}
+\def\paragraphautorefname{段落}
+\def\subparagraphautorefname{子段落}
+\def\FancyVerbLineautorefname{行}
+\def\theoremautorefname{定理}
+
+\newtheorem{Theorem}{定理}[section]
+\newtheorem{Lemma}[Theorem]{引理}
+\newtheorem{Corollary}[Theorem]{推论}
+\newtheorem{Proposition}[Theorem]{命题}
+\newtheorem{Definition}[Theorem]{定义}
+\newtheorem{Example}[Theorem]{例}
+
+%%参考文献设置
+\newcommand{\reference}{
+\bibliographystyle{unsrt}
+\begin{center}
+	\bibliography{reference}
+\end{center}
+}
+
+%%文本框设置
+\newcommand{\tbox}[1]{
+\begin{center}
+\begin{tcolorbox}[colback=gray!10,
+                  colframe=black,
+                  width=8cm,
+                  arc=1mm, auto outer arc,
+                  boxrule=0.5pt,
+                 ]
+{#1}
+\end{tcolorbox}
+\end{center}
+}
+
+%%页眉设置
+\pagestyle{fancy}
+\fancyhead[L]{}
+\fancyhead[C]{\fangsong 嵌入式系统课程设计大作业}
+\fancyhead[R]{}
+
+%封面页设置
+{
+    \title{
+    \vspace{3cm}
+    \heiti \Huge \textbf{{嵌入式系统课程设计报告}} \par
+    \vspace{1cm}
+    \heiti \Large {\underline{智能联网时钟系统 — S800 ARM + PC 数字孪生}}
+    \vspace{3cm}
+    }
+
+    \author{
+    \vspace{0.5cm}
+    \kaishu\Large 学院\ \dlmu[9cm]{电子信息与电气工程学院} \\
+    \vspace{0.5cm}
+    \kaishu\Large 班级\ \dlmu[9cm]{电院23Dxxx} \\
+    \vspace{0.5cm}
+    \kaishu\Large 学号\ \dlmu[9cm]{20260001} \qquad  \\
+    \vspace{0.5cm}
+    \kaishu\Large 姓名\ \dlmu[9cm]{HU ZHENYE} \qquad \\
+    \vspace{0.5cm}
+    \kaishu\Large 版本\ \dlmu[9cm]{V1.3} \qquad \\
+        }
+
+    \date{\today}
+}
+
+%%在这里可更改封面logo
+\newcommand{\cover}{
+%%封面校名logo
+\begin{figure}
+	\centering
+        \vspace{2cm}
+	\includegraphics[width=0.6\textwidth]{figures/sjtu_logo.pdf}
+\end{figure}
+
+\maketitle
+}

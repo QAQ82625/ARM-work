@@ -563,14 +563,16 @@ void Key_Scan(void)
  * ================================================================ */
 static void Beep_On(void)
 {
-    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
+    GPIOPinConfigure(GPIO_PK5_M0PWM7);
+    GPIOPinTypePWM(GPIO_PORTK_BASE, GPIO_PIN_5);
     PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
 static void Beep_Off(void)
 {
-    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
     PWMGenDisable(PWM0_BASE, PWM_GEN_3);
+    GPIOPinTypeGPIOOutput(GPIO_PORTK_BASE, GPIO_PIN_5);
+    GPIOPinWrite(GPIO_PORTK_BASE, GPIO_PIN_5, 0);
 }
 
 /* ================================================================
@@ -2121,11 +2123,6 @@ int main(void)
                 }
             }
 
-            /* 远程蜂鸣 — 10ms 粒度实现 ±20ms 精度 */
-            if (remote_beep_active && g_tick_ms >= remote_beep_end_ms) {
-                remote_beep_active = 0;
-                Beep_Off();
-            }
         }
 
         /* 显示扫描 2ms */
@@ -2170,6 +2167,14 @@ int main(void)
                         prev_phase = phase;
                         if (phase) Beep_On(); else Beep_Off();
                     }
+                }
+            }
+
+            /* 远程蜂鸣（非阻塞，100ms检查一次） */
+            if (remote_beep_active) {
+                if (g_tick_ms >= remote_beep_end_ms) {
+                    remote_beep_active = 0;
+                    Beep_Off();
                 }
             }
 

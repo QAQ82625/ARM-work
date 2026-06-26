@@ -292,6 +292,7 @@ static uint32_t led_override_start_ms;  /* 接管开始时刻, 10s超时 */
 
 /* 蜂鸣器静态变量 */
 static uint32_t beep_start_ms = 0;
+static uint8_t  beep_phase_on = 0;
 
 /* 远程蜂鸣（非阻塞） */
 static uint8_t  remote_beep_active = 0;
@@ -965,6 +966,7 @@ void Alarm_Check(void)
         g_time.s == g_alarm_slot[idx].s) {
         g_alarm_beep_active = 1;
         beep_start_ms = g_tick_ms;
+        beep_phase_on = 1;
         Beep_On();
         UART_PutStrNB("*EVT:ALARM\r\n");
         /* 天气-闹钟联动 */
@@ -986,6 +988,7 @@ static void Alarm_Stop(void)
         g_alarm_beep_active = 0;
         g_alarm_weather_beeps = 0;
         g_alarm_weather_led = 0;
+        beep_phase_on = 0;
         Beep_Off();
         UART_PutStrNB("*EVT:ALARM_OFF\r\n");
     }
@@ -2180,11 +2183,10 @@ int main(void)
                     g_alarm_weather_beeps = 0;
                     g_alarm_weather_led = 0;
                 } else {
-                    uint8_t phase = (uint8_t)((elapsed / 200) & 0x01);
-                    static uint8_t prev_phase = 0;
-                    if (phase != prev_phase) {
-                        prev_phase = phase;
-                        if (phase) Beep_On(); else Beep_Off();
+                    uint8_t phase_in_cycle = (uint8_t)((elapsed / 200) & 0x01);
+                    if (phase_in_cycle != beep_phase_on) {
+                        beep_phase_on = phase_in_cycle;
+                        if (beep_phase_on) { Beep_On(); } else { Beep_Off(); }
                     }
                 }
             }

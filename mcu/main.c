@@ -572,7 +572,7 @@ static void Beep_Off(void)
 {
     PWMGenDisable(PWM0_BASE, PWM_GEN_3);
     GPIOPinTypeGPIOOutput(GPIO_PORTK_BASE, GPIO_PIN_5);
-    GPIOPinWrite(GPIO_PORTK_BASE, GPIO_PIN_5, 0);
+    GPIOPinWrite(GPIO_PORTK_BASE, GPIO_PIN_5, GPIO_PIN_5);
 }
 
 /* ================================================================

@@ -26,6 +26,7 @@
 #include "systick.h"
 #include "interrupt.h"
 #include "uart.h"
+#include "pwm.h"
 #include <ctype.h>
 #include <stdlib.h>
 
@@ -558,30 +559,16 @@ void Key_Scan(void)
 }
 
 /* ================================================================
- * Beeper Timer (PN1, 2kHz via Timer0A ISR)
+ * Beeper (PK5, PWM0 Gen3 Out7, 2kHz/50%)
  * ================================================================ */
-void Beeper_Init(void)
+static void Beep_On(void)
 {
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0)) {}
-    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
-    TimerLoadSet(TIMER0_BASE, TIMER_A, ui32SysClock / 4000);
-    IntEnable(INT_TIMER0A_TM4C123);
-    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    TimerEnable(TIMER0_BASE, TIMER_A);
+    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 }
 
-void TIMER0A_Handler(void)
+static void Beep_Off(void)
 {
-    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    if (g_alarm_beep_active || remote_beep_active) {
-        static uint8_t phase = 0;
-        phase = !phase;
-        if (phase)
-            GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, GPIO_PIN_1);
-        else
-            GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0);
-    }
+    PWMGenDisable(PWM0_BASE, PWM_GEN_3);
 }
 
 /* ================================================================
@@ -978,6 +965,7 @@ void Alarm_Check(void)
         g_time.s == g_alarm_slot[idx].s) {
         g_alarm_beep_active = 1;
         beep_start_ms = g_tick_ms;
+        Beep_On();
         UART_PutStrNB("*EVT:ALARM\r\n");
         /* 天气-闹钟联动 */
         if (g_weather_valid) {
@@ -998,7 +986,7 @@ static void Alarm_Stop(void)
         g_alarm_beep_active = 0;
         g_alarm_weather_beeps = 0;
         g_alarm_weather_led = 0;
-        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, 0);
+        Beep_Off();
         UART_PutStrNB("*EVT:ALARM_OFF\r\n");
     }
 }
@@ -1131,6 +1119,23 @@ static void GPIO_Init(void)
     while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPION)) {}
     GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1);
     GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0 | GPIO_PIN_1, 0);
+
+    /* Beeper: PK5 → M0PWM7, PWM0 Gen3 Out7, 2kHz/50% */
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOK);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOK)) {}
+    GPIOPinTypeGPIOOutput(GPIO_PORTK_BASE, GPIO_PIN_5);
+    GPIOPinConfigure(GPIO_PK5_M0PWM7);
+    GPIOPinTypePWM(GPIO_PORTK_BASE, GPIO_PIN_5);
+
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_PWM0)) {}
+    PWMClockSet(PWM0_BASE, PWM_SYSCLK_DIV_1);
+    PWMGenConfigure(PWM0_BASE, PWM_GEN_3,
+                    PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, 8000);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, 2000);
+    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
+    PWMGenDisable(PWM0_BASE, PWM_GEN_3);
 }
 
 static void I2C_Init(void)
@@ -1794,6 +1799,7 @@ void ProcessCommand(char *cmd)
             if (ms < 10 || ms > 5000) { UART_PutStrNB("ERROR RANGE\r\n"); return; }
             remote_beep_active = 1;
             remote_beep_end_ms = g_tick_ms + ms;
+            Beep_On();
             UART_PutStrNB("OK\r\n");
             return;
         }
@@ -2055,9 +2061,6 @@ int main(void)
     IntEnable(INT_UART0);
     UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
 
-    /* Beeper Timer (PN1, 2kHz) — init AFTER IntMasterEnable */
-    Beeper_Init();
-
     IntMasterEnable();
 
     /* 默认值 */
@@ -2119,6 +2122,7 @@ int main(void)
             /* 远程蜂鸣 — 10ms 粒度实现 ±20ms 精度 */
             if (remote_beep_active && g_tick_ms >= remote_beep_end_ms) {
                 remote_beep_active = 0;
+                Beep_Off();
             }
         }
 
@@ -2149,13 +2153,21 @@ int main(void)
                 }
             }
 
-            /* 闹钟响铃 — Timer0A ISR toggles PN1 at 2kHz */
+            /* 闹钟响铃 — PWM0 Gen3 2kHz, 200ms on/off 相位切换 */
             if (g_alarm_beep_active) {
                 uint32_t total_ms = 10000 + (uint32_t)g_alarm_weather_beeps * 400;
-                if (Tick_TimedOut(beep_start_ms, total_ms)) {
+                uint32_t elapsed = g_tick_ms - beep_start_ms;
+                if (elapsed >= total_ms) {
                     Alarm_Stop();
                     g_alarm_weather_beeps = 0;
                     g_alarm_weather_led = 0;
+                } else {
+                    uint8_t phase = (uint8_t)((elapsed / 200) & 0x01);
+                    static uint8_t prev_phase = 0;
+                    if (phase != prev_phase) {
+                        prev_phase = phase;
+                        if (phase) Beep_On(); else Beep_Off();
+                    }
                 }
             }
 

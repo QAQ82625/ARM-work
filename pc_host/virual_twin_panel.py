@@ -1583,20 +1583,20 @@ class VirtualTwinPanel(QMainWindow):
                     x = list(range(n))
                     plt.plot(x, vals, 'o-', color='#FF6B6B', markersize=6, linewidth=2)
                     plt.fill_between(x, vals, alpha=0.15, color='#FF6B6B')
-                    plt.axhline(y=30, color='orange', linestyle='--', linewidth=1, label='高温线 30°C')
-                    plt.axhline(y=0, color='#88F', linestyle=':', linewidth=1, label='0°C')
+                    plt.axhline(y=30, color='orange', linestyle='--', linewidth=1, label='High 30C')
+                    plt.axhline(y=0, color='#88F', linestyle=':', linewidth=1, label='0C')
                     if n <= 8:
                         plt.xticks(x, [d[-5:] for d in dates])
                     else:
                         step = max(1, n // 6)
                         plt.xticks(list(range(0, n, step)), [dates[i][-5:] for i in range(0, n, step)])
                     plt.xticks(rotation=45)
-                    plt.ylabel('Temperature (°C)')
+                    plt.ylabel('Temp (C)')
                     plt.title('Weather Temperature Trend')
                     plt.legend()
                 else:
                     plt.bar(['Current'], [vals[0] if vals else 0], color='#FF6B6B')
-                    plt.ylabel('Temperature (°C)')
+                    plt.ylabel('Temp (C)')
                     plt.title('Current Weather Temperature')
             else:
                 plt.text(0.5, 0.5, 'No weather temperature data', ha='center')

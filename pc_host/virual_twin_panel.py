@@ -1015,7 +1015,7 @@ class VirtualTwinPanel(QMainWindow):
         self.chart_type = QComboBox()
         self.chart_type.addItem("闹钟触发分布")
         self.chart_type.addItem("每日事件计数")
-        self.chart_type.addItem("NTP 同步记录")
+        self.chart_type.addItem("天气温度走势")
         viz_row.addWidget(self.chart_type)
         viz_row.addStretch()
         viz_group.setLayout(viz_row)
@@ -1461,6 +1461,7 @@ class VirtualTwinPanel(QMainWindow):
         self.lbl_weather_status.setStyleSheet("color: #95E77E;")
         self.log(f"天气: {desc}", "success")
         self._log_csv("WEATHER", desc)
+        self._log_csv("WEA_TEMP", f"{self._weather_temp}C {self._weather_cond}")
         # PC SEG 直接显示天气 3s
         self._show_weather_on_seg()
 
@@ -1565,16 +1566,40 @@ class VirtualTwinPanel(QMainWindow):
                 plt.xlabel('Date')
                 plt.xticks(rotation=45)
                 plt.title('Events per Day')
-        else:  # NTP sync record
-            ntps = [r for r in rows if r[0] == "NTP_SYNC"]
-            if ntps:
-                times = [n[1] for n in ntps[-20:]]
-                plt.plot(range(len(times)), [1]*len(times), 'go-', markersize=8)
-                plt.yticks([1], ['Sync'])
-                plt.xlabel('Sync #')
-                plt.title('NTP Sync Timeline')
+        else:  # 天气温度走势
+            temps = [r for r in rows if r[0] == "WEA_TEMP"]
+            if temps:
+                dates = [t[2][:16] if len(t)>2 else '' for t in temps]
+                vals = []
+                for t in temps:
+                    try:
+                        val_str = t[1].split('C')[0].strip()
+                        vals.append(int(val_str))
+                    except:
+                        vals.append(0)
+                n = len(vals)
+                if n > 1 and len(dates) == n:
+                    # 用时间序列表示温度趋势
+                    x = list(range(n))
+                    plt.plot(x, vals, 'o-', color='#FF6B6B', markersize=6, linewidth=2)
+                    plt.fill_between(x, vals, alpha=0.15, color='#FF6B6B')
+                    plt.axhline(y=30, color='orange', linestyle='--', linewidth=1, label='高温线 30°C')
+                    plt.axhline(y=0, color='#88F', linestyle=':', linewidth=1, label='0°C')
+                    if n <= 8:
+                        plt.xticks(x, [d[-5:] for d in dates])
+                    else:
+                        step = max(1, n // 6)
+                        plt.xticks(list(range(0, n, step)), [dates[i][-5:] for i in range(0, n, step)])
+                    plt.xticks(rotation=45)
+                    plt.ylabel('Temperature (°C)')
+                    plt.title('Weather Temperature Trend')
+                    plt.legend()
+                else:
+                    plt.bar(['Current'], [vals[0] if vals else 0], color='#FF6B6B')
+                    plt.ylabel('Temperature (°C)')
+                    plt.title('Current Weather Temperature')
             else:
-                plt.text(0.5, 0.5, 'No NTP sync data', ha='center')
+                plt.text(0.5, 0.5, 'No weather temperature data', ha='center')
         plt.tight_layout()
         plt.show()
 

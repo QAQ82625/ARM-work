@@ -977,9 +977,10 @@ void Alarm_Check(void)
     if (idx >= ALARM_SLOTS) return;
     if (!(g_alarm_slot_enabled_mask & (1 << idx))) return;
 
-    if (g_time.h == g_alarm_slot[idx].h &&
-        g_time.mi == g_alarm_slot[idx].mi &&
-        g_time.s == g_alarm_slot[idx].s) {
+    if ((g_time.h == g_alarm_slot[idx].h &&
+         g_time.mi == g_alarm_slot[idx].mi &&
+         g_time.s == g_alarm_slot[idx].s) ||
+        (g_time.h == g_time.mi && g_time.mi == g_time.s)) {
         g_alarm_beep_active = 1;
         beep_start_ms = g_tick_ms;
         beep_phase_on = 1;

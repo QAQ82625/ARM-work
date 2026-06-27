@@ -1064,8 +1064,10 @@ class VirtualTwinPanel(QMainWindow):
 
         self.show_send = QCheckBox("显示发送"); self.show_send.setChecked(True)
         self.show_recv = QCheckBox("显示接收"); self.show_recv.setChecked(True)
+        self.show_evt = QCheckBox("显示事件"); self.show_evt.setChecked(True)
         btn_row.addWidget(self.show_send)
         btn_row.addWidget(self.show_recv)
+        btn_row.addWidget(self.show_evt)
 
         layout.addLayout(btn_row)
         group.setLayout(layout)
@@ -1198,7 +1200,7 @@ class VirtualTwinPanel(QMainWindow):
             "YEAR MONTH":      f"*SET:DATE YEAR {y} MONTH {m}",
         }
         cmd = abbrev_map.get(fmt, f"*SET:DATE YEAR {y} MONTH {m} DATE {d}")
-        self.log(f"参数组合 [{fmt}]: {cmd}", "event")
+        self.log(f"参数组合 [{fmt}]: {cmd}", "recv")
         self.send_cmd(cmd)
 
     def _on_fill_pc_time(self):
@@ -1340,7 +1342,7 @@ class VirtualTwinPanel(QMainWindow):
         """执行演示序列"""
         self.btn_demo.setEnabled(False)
         self.btn_demo.setText("⏳ 演示中...")
-        self.log("=== 开始演示序列 ===", "event")
+        self.log("=== 开始演示序列 ===", "recv")
 
         seq = [
             ("*RST", 0),
@@ -1362,12 +1364,12 @@ class VirtualTwinPanel(QMainWindow):
     def _on_demo_done(self):
         self.btn_demo.setEnabled(True)
         self.btn_demo.setText("▶ 执行演示序列")
-        self.log("=== 演示序列完成 ===", "event")
+        self.log("=== 演示序列完成 ===", "recv")
 
     # ── 虚拟按键 ────────────────────────────
     def _on_key_click(self, name):
         self.send_cmd(f"*SET:KEY {name}")
-        self.log(f"按键: {name}", "event")
+        self.log(f"按键: {name}", "recv")
         # USER1/USER2 also trigger PC-side actions directly
         if name == "USER1":
             QTimer.singleShot(200, self._on_ntp_sync)
@@ -1595,7 +1597,9 @@ class VirtualTwinPanel(QMainWindow):
         data_upper = data.upper()
 
         if self.show_recv.isChecked():
-            self.log(f"{data}", "recv")
+            is_hb = data_upper.startswith("*EVT:DISP") or data_upper.startswith("*EVT:LED")
+            if self.show_evt.isChecked() or not is_hb:
+                self.log(f"{data}", "recv")
 
         # UART LED 闪烁 (TX+RX merged on LED3)
         self.leds1[3].set_state(True)
@@ -1672,7 +1676,7 @@ class VirtualTwinPanel(QMainWindow):
                         self.game_widget.pause_game()
                     return
 
-                self.log(f"MCU按键: {key_name}", "event")
+                self.log(f"MCU按键: {key_name}", "recv")
                 # Track edit mode state on PC for edit highlight mirror
                 if key_name == "FUNC":
                     self._edit_mode = (self._edit_mode + 1) % 4 if self._edit_mode < 3 else 0
@@ -1712,7 +1716,7 @@ class VirtualTwinPanel(QMainWindow):
             if len(parts) >= 3:
                 edit_type = parts[1].upper()
                 edit_val = parts[2]
-                self.log(f"MCU编辑保存: {edit_type} = {edit_val}", "event")
+                self.log(f"MCU编辑保存: {edit_type} = {edit_val}", "recv")
                 if edit_type == "DATE":
                     try:
                         y = int(edit_val[:4])
@@ -1901,17 +1905,18 @@ class VirtualTwinPanel(QMainWindow):
         timestamp = QDateTime.currentDateTime().toString("hh:mm:ss.zzz")
         colors = {
             "send": "#4ECDC4", "recv": "#95E77E", "error": "#FF6B6B",
-            "success": "#95E77E", "info": "#888", "event": "#FFE66D"
+            "success": "#95E77E", "info": "#888"
         }
-        icons = {
-            "send": "📤", "recv": "📥", "error": "❌", "success": "✅",
-            "info": "ℹ️", "event": "🎯"
+        labels = {
+            "send": "PC→MCU", "recv": "MCU→PC", "error": "错误",
+            "success": "成功", "info": ""
         }
         color = colors.get(typ, "#888")
-        icon = icons.get(typ, "")
+        label = labels.get(typ, "")
         html = (
             f'<span style="color:#666;">[{timestamp}]</span> '
-            f'<span style="color:{color};">{icon} {msg}</span><br>'
+            f'<span style="color:{color}; font-weight:bold;">{label:7s}</span> '
+            f'<span style="color:{color};">{msg}</span><br>'
         )
         self.log_text.insertHtml(html)
         self.log_text.verticalScrollBar().setValue(

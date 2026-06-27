@@ -1594,15 +1594,12 @@ class VirtualTwinPanel(QMainWindow):
     def handle_data(self, data):
         data_upper = data.upper()
 
-        # Heartbeat events handled silently (flood the log otherwise)
-        is_heartbeat = data_upper.startswith("*EVT:DISP") or data_upper.startswith("*EVT:LED")
-
-        if self.show_recv.isChecked() and not is_heartbeat:
+        if self.show_recv.isChecked():
             self.log(f"{data}", "recv")
 
-        # RX LED 闪烁
-        self.leds2[0].set_state(True)
-        QTimer.singleShot(100, lambda: self.leds2[0].set_state(False))
+        # UART LED 闪烁 (TX+RX merged on LED3)
+        self.leds1[3].set_state(True)
+        QTimer.singleShot(100, lambda: self.leds1[3].set_state(False))
 
         # ── *EVT:DISP <8chars> <dpHex> (skip while PC shows weather) ──
         if data_upper.startswith("*EVT:DISP") and not self._show_weather_seg:
